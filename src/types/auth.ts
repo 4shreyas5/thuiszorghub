@@ -52,3 +52,20 @@ export interface UserProfile extends Timestamp {
   isActive: boolean;
   organizationId: string;
 }
+
+export type AuthStatus = "idle" | "loading" | "authenticated" | "unauthenticated" | "error";
+
+export interface AuthError {
+  code: string;
+  message: string;
+  type: "auth" | "network" | "unknown";
+}
+
+export interface IdentityContext {
+  user: UserProfile | null;
+  session: AuthSession | null;
+  status: AuthStatus;
+  error: AuthError | null;
+  isLoading: boolean;
+  isAuthenticated: boolean;
+}
