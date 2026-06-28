@@ -1,0 +1,45 @@
+{
+  "common": {
+    "appName": "ThuisZorgHub",
+    "loading": "Laden...",
+    "error": "Fout",
+    "success": "Succes",
+    "warning": "Waarschuwing",
+    "info": "Informatie",
+    "confirm": "Bevestigen",
+    "cancel": "Annuleren",
+    "save": "Opslaan",
+    "edit": "Bewerken",
+    "delete": "Verwijderen",
+    "create": "Maken",
+    "update": "Bijwerken",
+    "back": "Terug",
+    "next": "Volgende",
+    "close": "Sluiten",
+    "logout": "Afmelden",
+    "login": "Aanmelden"
+  },
+  "auth": {
+    "login": "Aanmelden",
+    "signup": "Registreren",
+    "forgotPassword": "Wachtwoord vergeten?",
+    "resetPassword": "Wachtwoord opnieuw instellen",
+    "password": "Wachtwoord",
+    "email": "E-mailadres",
+    "enterEmail": "Voer uw e-mailadres in",
+    "enterPassword": "Voer uw wachtwoord in"
+  },
+  "navigation": {
+    "dashboard": "Dashboard",
+    "clients": "Cliënten",
+    "employees": "Medewerkers",
+    "planning": "Planning",
+    "calendar": "Kalender",
+    "visits": "Bezoeken",
+    "documents": "Documenten",
+    "communication": "Communicatie",
+    "reports": "Rapporten",
+    "administration": "Administratie",
+    "settings": "Instellingen"
+  }
+}

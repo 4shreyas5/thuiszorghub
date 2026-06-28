@@ -1,0 +1,45 @@
+{
+  "common": {
+    "appName": "ThuisZorgHub",
+    "loading": "Loading...",
+    "error": "Error",
+    "success": "Success",
+    "warning": "Warning",
+    "info": "Information",
+    "confirm": "Confirm",
+    "cancel": "Cancel",
+    "save": "Save",
+    "edit": "Edit",
+    "delete": "Delete",
+    "create": "Create",
+    "update": "Update",
+    "back": "Back",
+    "next": "Next",
+    "close": "Close",
+    "logout": "Logout",
+    "login": "Login"
+  },
+  "auth": {
+    "login": "Login",
+    "signup": "Sign Up",
+    "forgotPassword": "Forgot Password?",
+    "resetPassword": "Reset Password",
+    "password": "Password",
+    "email": "Email Address",
+    "enterEmail": "Enter your email address",
+    "enterPassword": "Enter your password"
+  },
+  "navigation": {
+    "dashboard": "Dashboard",
+    "clients": "Clients",
+    "employees": "Employees",
+    "planning": "Planning",
+    "calendar": "Calendar",
+    "visits": "Visits",
+    "documents": "Documents",
+    "communication": "Communication",
+    "reports": "Reports",
+    "administration": "Administration",
+    "settings": "Settings"
+  }
+}
