@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find . -path \"*/node_modules\" -prune -o -path \"*/\\\\.next\" -prune -o -type f \\\\\\( -name \"*billing*\" -o -path \"*/migrations/008*\" \\\\\\) -print)",
+      "Bash(find . -path \"*/node_modules\" -prune -o -path \"*/\\\\.next\" -prune -o -type f -path \"*/api/billing/*\" -o -path \"*/admin/billing/*\" -print)",
+      "Bash(netstat -ano)",
+      "Bash(findstr :3001)",
+      "PowerShell(Get-NetTCPConnection -LocalPort 3001 -ErrorAction SilentlyContinue)",
+      "Bash(curl -v http://localhost:3001/)",
+      "PowerShell(Stop-Process -Id 9244 -Force)",
+      "Bash(curl -s http://localhost:3000/)",
+      "Bash(curl -s -X POST http://localhost:3000/api/auth/register -H 'Content-Type: application/json' -d '{ *)",
+      "Bash(curl -v -X POST http://localhost:3000/api/auth/register -H 'Content-Type: application/json' -d '{\"email\":\"test@example.com\",\"password\":\"TestPassword123\",\"firstName\":\"Test\",\"lastName\":\"User\"}')",
+      "Bash(curl -s -i http://localhost:3000/api/auth/profile)"
+    ]
+  }
+}

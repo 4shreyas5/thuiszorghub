@@ -27,7 +27,10 @@ export function useAuthActions(): UseAuthActionsReturn {
     setIsLoading(true);
     setError(null);
     try {
-      await AuthService.signIn(payload);
+      const result = await AuthService.signIn(payload);
+
+      // Set authentication cookie for middleware to recognize
+      document.cookie = `thuiszorghub-auth-token=${result.session.accessToken}; path=/; max-age=3600`;
     } catch (err) {
       const error = err instanceof Error ? err : new Error("Sign in failed");
       setError(error);
@@ -56,6 +59,8 @@ export function useAuthActions(): UseAuthActionsReturn {
     setError(null);
     try {
       await AuthService.signOut();
+      // Clear authentication cookie
+      document.cookie = "thuiszorghub-auth-token=; path=/; max-age=0";
     } catch (err) {
       const error = err instanceof Error ? err : new Error("Sign out failed");
       setError(error);

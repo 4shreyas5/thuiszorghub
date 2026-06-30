@@ -1,0 +1,56 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
+"use client";
+
+import { useState } from "react";
+import { useRouter } from "next/navigation";
+import { PageHeader } from "@/components/admin/PageHeader";
+import { AssignmentForm } from "@/components/admin/AssignmentForm";
+
+export default function NewAssignmentPage() {
+  const router = useRouter();
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleSubmit = async (data: any) => {
+    try {
+      setIsLoading(true);
+      setError(null);
+
+      const response = await fetch("/api/assignments", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(data),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || "Failed to create assignment");
+      }
+
+      const assignment = await response.json();
+      router.push(`/admin/assignments/${assignment.id}`);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Failed to create assignment";
+      setError(message);
+      console.error("Error creating assignment:", err);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      <PageHeader title="Create Assignment" description="Assign an employee to a client" />
+
+      {error && (
+        <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-4 text-red-700 dark:text-red-400">
+          {error}
+        </div>
+      )}
+
+      <div className="bg-white dark:bg-gray-800 rounded-lg p-6">
+        <AssignmentForm onSubmit={handleSubmit} isLoading={isLoading} />
+      </div>
+    </div>
+  );
+}

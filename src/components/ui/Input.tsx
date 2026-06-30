@@ -3,7 +3,7 @@ import { AlertCircle } from "lucide-react";
 
 interface InputProps extends InputHTMLAttributes<HTMLInputElement> {
   label?: string;
-  error?: string;
+  error?: string | undefined;
   helperText?: string;
   icon?: ReactNode;
   required?: boolean;

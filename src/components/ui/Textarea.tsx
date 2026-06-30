@@ -3,7 +3,7 @@ import { AlertCircle } from "lucide-react";
 
 interface TextareaProps extends TextareaHTMLAttributes<HTMLTextAreaElement> {
   label?: string;
-  error?: string;
+  error?: string | undefined;
   helperText?: string;
   required?: boolean;
   charLimit?: number;

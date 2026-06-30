@@ -2,10 +2,48 @@ import { NextRequest, NextResponse } from "next/server";
 import { TenantResolver } from "@/core/middleware/tenant";
 
 export const config = {
-  matcher: ["/((?!_next|.*\\..*|api|public|login|forgot-password|reset-password).*)", "/api/(.*)"],
+  matcher: ["/((?!_next|.*\\..*|public).*)", "/api/(.*)"],
 };
 
 export function middleware(request: NextRequest): NextResponse | void {
+  const pathname = request.nextUrl.pathname;
+
+  // Check for authorization token in header (will be set by fetch calls) or cookies
+  const authHeader = request.headers.get("authorization");
+  const authCookie = request.cookies.get("thuiszorghub-auth-token");
+  const hasAuth = !!(authHeader || authCookie?.value);
+
+  // Public routes that don't need authentication
+  const publicRoutes = ["/auth/login", "/auth/register", "/auth/forgot-password", "/auth/reset-password", "/"];
+
+  // Protected routes that require authentication
+  const isApiRoute = pathname.startsWith("/api");
+  const isPageRoute = pathname.startsWith("/admin") || pathname.startsWith("/onboarding");
+  const isProtectedRoute = isApiRoute || isPageRoute;
+
+  const isPublicRoute = publicRoutes.some(route => pathname === route || pathname.startsWith(route + "/"));
+
+  // If trying to access protected route without auth
+  if (isProtectedRoute && !hasAuth) {
+    // API routes return JSON 401, not HTML redirects
+    if (isApiRoute) {
+      return NextResponse.json(
+        { error: "Unauthorized" },
+        { status: 401 }
+      );
+    }
+
+    // Page routes redirect to login
+    const loginUrl = new URL("/auth/login", request.url);
+    loginUrl.searchParams.set("from", pathname);
+    return NextResponse.redirect(loginUrl);
+  }
+
+  // If trying to access auth pages with auth, redirect to admin
+  if (isPublicRoute && hasAuth && pathname.startsWith("/auth")) {
+    return NextResponse.redirect(new URL("/admin", request.url));
+  }
+
   // Extract tenant information
   const tenant = TenantResolver.extractFromRequest(request);
 
