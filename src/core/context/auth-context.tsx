@@ -37,23 +37,53 @@ export function AuthProvider({ children }: AuthProviderProps): React.JSX.Element
       if (currentSession) {
         setSession(currentSession);
 
-        // In a real implementation, fetch full user profile from database
-        // For now, use minimal profile from auth session
-        const userProfile: UserProfile = {
-          id: currentSession.user.id,
-          userId: currentSession.user.id,
-          email: currentSession.user.email,
-          firstName: "", // To be fetched from database
-          lastName: "", // To be fetched from database
-          timezone: "UTC",
-          language: "en",
-          isActive: true,
-          organizationId: "", // To be fetched from database
-          createdAt: currentSession.user.createdAt,
-          updatedAt: currentSession.user.createdAt,
-        };
+        // Fetch full user profile from database via API
+        try {
+          const response = await fetch("/api/auth/profile", {
+            headers: {
+              "Authorization": `Bearer ${currentSession.session.accessToken}`,
+            },
+          });
 
-        setUser(userProfile);
+          if (response.ok) {
+            const userData = await response.json();
+            setUser(userData);
+          } else {
+            // Fallback to minimal profile if API fails
+            const userProfile: UserProfile = {
+              id: currentSession.user.id,
+              userId: currentSession.user.id,
+              email: currentSession.user.email,
+              firstName: "",
+              lastName: "",
+              timezone: "UTC",
+              language: "en",
+              isActive: true,
+              organizationId: "",
+              createdAt: currentSession.user.createdAt,
+              updatedAt: currentSession.user.createdAt,
+            };
+            setUser(userProfile);
+          }
+        } catch (profileError) {
+          console.error("Failed to fetch user profile:", profileError);
+          // Fallback to minimal profile
+          const userProfile: UserProfile = {
+            id: currentSession.user.id,
+            userId: currentSession.user.id,
+            email: currentSession.user.email,
+            firstName: "",
+            lastName: "",
+            timezone: "UTC",
+            language: "en",
+            isActive: true,
+            organizationId: "",
+            createdAt: currentSession.user.createdAt,
+            updatedAt: currentSession.user.createdAt,
+          };
+          setUser(userProfile);
+        }
+
         setStatus("authenticated");
       } else {
         setSession(null);

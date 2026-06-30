@@ -11,6 +11,8 @@ if (!supabaseUrl || !supabaseAnonKey) {
 
 export const supabaseClient = createClient<Database>(supabaseUrl, supabaseAnonKey);
 
+export const supabase = supabaseClient;
+
 export const supabaseAdmin =
   supabaseServiceKey &&
   createClient<Database>(supabaseUrl, supabaseServiceKey, {
