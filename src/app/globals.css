@@ -1,50 +1,301 @@
 @import "tailwindcss";
 
-@layer base {
-  :root {
-    --background: 0 0% 100%;
-    --foreground: 0 0% 3.6%;
-    --card: 0 0% 100%;
-    --card-foreground: 0 0% 3.6%;
-    --popover: 0 0% 100%;
-    --popover-foreground: 0 0% 3.6%;
-    --muted: 0 0% 96.1%;
-    --muted-foreground: 0 0% 45.1%;
-    --accent: 0 0% 9.1%;
-    --accent-foreground: 0 0% 98%;
-    --destructive: 0 84.2% 60.2%;
-    --destructive-foreground: 0 0% 98%;
-    --border: 0 0% 89.8%;
-    --input: 0 0% 89.8%;
-    --ring: 0 0% 3.6%;
-    --radius: 0.5rem;
-  }
+:root {
+  /* Layout */
+  --radius: 0.75rem;
 
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --background: 0 0% 3.6%;
-      --foreground: 0 0% 98%;
-      --card: 0 0% 3.6%;
-      --card-foreground: 0 0% 98%;
-      --popover: 0 0% 3.6%;
-      --popover-foreground: 0 0% 98%;
-      --muted: 0 0% 14.3%;
-      --muted-foreground: 0 0% 63.9%;
-      --accent: 0 0% 98%;
-      --accent-foreground: 0 0% 9.1%;
-      --destructive: 0 84.2% 60.2%;
-      --destructive-foreground: 0 0% 9.1%;
-      --border: 0 0% 14.3%;
-      --input: 0 0% 14.3%;
-      --ring: 0 0% 83.1%;
+  /* Surfaces - neutral warm off-white (never pure white, never green-tinted).
+     Visual richness comes from the layered background wash below, not from
+     hue on the base surfaces themselves - "everything else neutral". */
+  --background: #fafaf9;
+  --foreground: #1d2939;
+  --card: #ffffff;
+  --card-foreground: #1d2939;
+  --card-gradient-to: #fafaf9;
+  --popover: #ffffff;
+  --popover-foreground: #1d2939;
+
+  /* Brand - deep medical teal. The one deliberate accent color; reserved for
+     primary actions, focus, and interactive/active states - never used to
+     tint neutral surfaces. */
+  --primary: #1f8a8a;
+  --primary-foreground: #ffffff;
+  --secondary: #f1f1ef;
+  --secondary-foreground: #1d2939;
+
+  /* Neutral - genuine warm gray, one step off the background. */
+  --muted: #f2f2f0;
+  --muted-foreground: #667085;
+  /* Accent is the one neutral-family token allowed a teal cast, because it
+     exists specifically to mark interaction (hover/active backgrounds) -
+     never used for static/resting surfaces. */
+  --accent: #e1f1ee;
+  --accent-foreground: #1d2939;
+
+  /* Semantic status - muted, clinical, never alarming. */
+  --success: #4c9f73;
+  --success-foreground: #ffffff;
+  --warning: #c1954b;
+  --warning-foreground: #3a2b12;
+  --danger: #b5566b;
+  --danger-foreground: #ffffff;
+  --info: #4a7fb5;
+  --info-foreground: #ffffff;
+
+  /* Form / interaction - borders neutral and almost invisible, input
+     slightly more defined. Ring stays teal - focus is interaction. */
+  --border: #e8e8e6;
+  --input: #d8d8d5;
+  --ring: #1f8a8a;
+  --selection-bg: #1f8a8a33;
+
+  /* Layered ambient background, applied once at the body level (never
+     per-page/per-component): a whisper of teal light top-center, a faint
+     neutral depth vignette bottom-right, and a near-invisible abstract
+     line-and-node motif (<6% opacity) evoking a medical/molecular network
+     without reading as illustration. */
+  --hero-gradient: radial-gradient(
+    1200px 480px at 50% -10%,
+    rgb(31 138 138 / 0.05),
+    transparent 60%
+  );
+  --mesh-gradient: radial-gradient(900px 420px at 100% 100%, rgb(0 0 0 / 0.02), transparent 60%);
+  --bg-pattern: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='400' height='400'%3E%3Cg fill='none' stroke='%231f8a8a' stroke-width='1' stroke-opacity='0.05'%3E%3Cpath d='M20,80 C90,40 150,140 230,90 S330,160 380,110'/%3E%3Cpath d='M10,230 C80,270 140,190 210,250 S310,270 390,230'/%3E%3Cpath d='M60,340 C130,320 190,370 260,330 S350,350 390,320'/%3E%3C/g%3E%3Cg fill='%231f8a8a' fill-opacity='0.06'%3E%3Ccircle cx='20' cy='80' r='3'/%3E%3Ccircle cx='230' cy='90' r='2.5'/%3E%3Ccircle cx='380' cy='110' r='2'/%3E%3Ccircle cx='210' cy='250' r='3'/%3E%3Ccircle cx='390' cy='230' r='2'/%3E%3Ccircle cx='130' cy='300' r='2.5'/%3E%3C/g%3E%3C/svg%3E");
+
+  /* Chart categorical palette - teal, sage, muted blue, muted amber, muted
+     rose. Calm and desaturated, never neon or crypto-dashboard-bright. */
+  --chart-1: #1f8a8a;
+  --chart-2: #7fb8a6;
+  --chart-3: #4a7fb5;
+  --chart-4: #c1954b;
+  --chart-5: #8fa9c9;
+  --chart-6: #b5566b;
+
+  /* Soft elevation - diffuse, low-contrast shadows instead of hard drop
+     shadows or glass effects. Overrides Tailwind's default shadow-* scale
+     so every existing shadow-sm/md/lg/xl usage picks this up for free. */
+  --shadow-color: 27 36 48;
+  --shadow-xs-raw: 0 1px 2px 0 rgb(var(--shadow-color) / 0.03);
+  --shadow-sm-raw:
+    0 1px 2px 0 rgb(var(--shadow-color) / 0.04), 0 1px 3px -1px rgb(var(--shadow-color) / 0.05);
+  --shadow-md-raw:
+    0 2px 4px -1px rgb(var(--shadow-color) / 0.04), 0 6px 16px -4px rgb(var(--shadow-color) / 0.07);
+  --shadow-lg-raw:
+    0 4px 8px -2px rgb(var(--shadow-color) / 0.05), 0 12px 28px -8px rgb(var(--shadow-color) / 0.1);
+  --shadow-xl-raw:
+    0 8px 16px -4px rgb(var(--shadow-color) / 0.06),
+    0 20px 44px -12px rgb(var(--shadow-color) / 0.14);
+
+  /* Elevation - stacking order for portal-rendered layers.
+     Referenced via arbitrary-value syntax (z-[var(--z-modal)]) rather
+     than through @theme, since custom z-index utility generation isn't
+     guaranteed across Tailwind v4 theme namespaces. */
+  --z-dropdown: 30;
+  --z-popover: 40;
+  --z-tooltip: 45;
+  --z-modal: 50;
+  --z-toast: 60;
+}
+
+.dark {
+  --background: #111412;
+  --foreground: #e4eeec;
+  --card: #171b19;
+  --card-foreground: #e4eeec;
+  --card-gradient-to: #1a1e1c;
+  --popover: #171b19;
+  --popover-foreground: #e4eeec;
+
+  --primary: #4dbdbd;
+  --primary-foreground: #06201f;
+  --secondary: #1c201e;
+  --secondary-foreground: #e4eeec;
+
+  --muted: #1c201e;
+  --muted-foreground: #9aa6a2;
+  --accent: #1a2b29;
+  --accent-foreground: #e4eeec;
+
+  --success: #6fbe93;
+  --success-foreground: #06201f;
+  --warning: #d9a867;
+  --warning-foreground: #2a1e0c;
+  --danger: #d98c9a;
+  --danger-foreground: #2a1013;
+  --info: #6fa0d9;
+  --info-foreground: #06131f;
+
+  --border: #232725;
+  --input: #2a2f2c;
+  --ring: #4dbdbd;
+  --selection-bg: #4dbdbd4d;
+
+  --hero-gradient: radial-gradient(
+    1200px 480px at 50% -10%,
+    rgb(77 189 189 / 0.06),
+    transparent 60%
+  );
+  --mesh-gradient: radial-gradient(
+    900px 420px at 100% 100%,
+    rgb(255 255 255 / 0.025),
+    transparent 60%
+  );
+  --bg-pattern: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='400' height='400'%3E%3Cg fill='none' stroke='%234dbdbd' stroke-width='1' stroke-opacity='0.06'%3E%3Cpath d='M20,80 C90,40 150,140 230,90 S330,160 380,110'/%3E%3Cpath d='M10,230 C80,270 140,190 210,250 S310,270 390,230'/%3E%3Cpath d='M60,340 C130,320 190,370 260,330 S350,350 390,320'/%3E%3C/g%3E%3Cg fill='%234dbdbd' fill-opacity='0.07'%3E%3Ccircle cx='20' cy='80' r='3'/%3E%3Ccircle cx='230' cy='90' r='2.5'/%3E%3Ccircle cx='380' cy='110' r='2'/%3E%3Ccircle cx='210' cy='250' r='3'/%3E%3Ccircle cx='390' cy='230' r='2'/%3E%3Ccircle cx='130' cy='300' r='2.5'/%3E%3C/g%3E%3C/svg%3E");
+
+  --chart-1: #4dbdbd;
+  --chart-2: #8fcbaf;
+  --chart-3: #6fa0d9;
+  --chart-4: #d9a867;
+  --chart-5: #9ac4e0;
+  --chart-6: #d98c9a;
+
+  /* Dark surfaces sit on a near-black background, so shadows read as soft
+     black diffusion rather than the light-mode's colored haze. */
+  --shadow-color: 0 0 0;
+  --shadow-xs-raw: 0 1px 2px 0 rgb(var(--shadow-color) / 0.18);
+  --shadow-sm-raw:
+    0 1px 2px 0 rgb(var(--shadow-color) / 0.22), 0 1px 3px -1px rgb(var(--shadow-color) / 0.28);
+  --shadow-md-raw:
+    0 2px 4px -1px rgb(var(--shadow-color) / 0.24), 0 8px 20px -4px rgb(var(--shadow-color) / 0.36);
+  --shadow-lg-raw:
+    0 4px 8px -2px rgb(var(--shadow-color) / 0.28), 0 16px 36px -8px rgb(var(--shadow-color) / 0.42);
+  --shadow-xl-raw:
+    0 8px 16px -4px rgb(var(--shadow-color) / 0.32),
+    0 24px 56px -12px rgb(var(--shadow-color) / 0.5);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-danger: var(--danger);
+  --color-danger-foreground: var(--danger-foreground);
+  --color-info: var(--info);
+  --color-info-foreground: var(--info-foreground);
+
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-chart-6: var(--chart-6);
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+
+  /* Soft shadow scale - replaces Tailwind's default harder shadow-* values
+     everywhere shadow-xs/sm/md/lg/xl is already used, with no class-name
+     changes required at any call site. */
+  --shadow-xs: var(--shadow-xs-raw);
+  --shadow-sm: var(--shadow-sm-raw);
+  --shadow-md: var(--shadow-md-raw);
+  --shadow-lg: var(--shadow-lg-raw);
+  --shadow-xl: var(--shadow-xl-raw);
+
+  --font-sans: var(--font-inter), system-ui, sans-serif;
+
+  /* Slightly tightened tracking on larger text reads as more considered
+     and less "default Tailwind admin template". */
+  --text-xl--letter-spacing: -0.012em;
+  --text-2xl--letter-spacing: -0.018em;
+  --text-3xl--letter-spacing: -0.022em;
+
+  --animate-accordion-down: accordion-down 0.2s ease-out;
+  --animate-accordion-up: accordion-up 0.2s ease-out;
+  --animate-shimmer: shimmer 1.8s ease-in-out infinite;
+
+  @keyframes accordion-down {
+    from {
+      height: 0;
+    }
+    to {
+      height: var(--radix-accordion-content-height);
     }
   }
+  @keyframes accordion-up {
+    from {
+      height: var(--radix-accordion-content-height);
+    }
+    to {
+      height: 0;
+    }
+  }
+  @keyframes shimmer {
+    from {
+      background-position: 150% 0;
+    }
+    to {
+      background-position: -50% 0;
+    }
+  }
+}
 
+@layer base {
   body {
-    background-color: hsl(var(--background));
-    color: hsl(var(--foreground));
-    font-family: Inter, system-ui, sans-serif;
+    background-color: var(--background);
+    background-image: var(--hero-gradient), var(--mesh-gradient), var(--bg-pattern);
+    background-repeat: no-repeat, no-repeat, repeat;
+    background-size:
+      auto,
+      auto,
+      400px 400px;
+    background-position:
+      top center,
+      bottom right,
+      center;
+    background-attachment: fixed, fixed, fixed;
+    color: var(--foreground);
+    font-family: var(--font-sans);
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
+  }
+
+  ::selection {
+    background-color: var(--selection-bg);
+  }
+
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) transparent;
+  }
+  *::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  *::-webkit-scrollbar-thumb {
+    background-color: var(--border);
+    border-radius: 9999px;
+    border: 2px solid transparent;
+    background-clip: padding-box;
+  }
+  *::-webkit-scrollbar-thumb:hover {
+    background-color: var(--muted-foreground);
   }
 }

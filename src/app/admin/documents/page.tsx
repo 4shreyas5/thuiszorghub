@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { useAuth } from "@/core/context/auth-context";
 import { PageHeader } from "@/components/admin/PageHeader";
 import { Upload, Download, Trash2, FileText, CheckCircle2, AlertCircle } from "lucide-react";
@@ -43,18 +43,22 @@ export default function DocumentsPage() {
       "insurance",
       "other",
     ],
-    client: ["referral", "consent_forms", "insurance_card", "medical_documents", "care_plan_pdf", "assessment", "identification", "other"],
+    client: [
+      "referral",
+      "consent_forms",
+      "insurance_card",
+      "medical_documents",
+      "care_plan_pdf",
+      "assessment",
+      "identification",
+      "other",
+    ],
     visit: ["photos", "attachments", "incident_reports", "signed_forms", "completion_documents"],
     care_plan: ["pdf", "goals", "tasks", "reviews"],
     invoice: ["invoice_pdf", "payment_receipt", "credit_notes", "attachments"],
   };
 
-  useEffect(() => {
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    fetchDocuments();
-  }, [entityType]);
-
-  async function fetchDocuments() {
+  const fetchDocuments = useCallback(async () => {
     try {
       setLoading(true);
       const params = new URLSearchParams();
@@ -70,7 +74,14 @@ export default function DocumentsPage() {
     } finally {
       setLoading(false);
     }
-  }
+  }, [entityType]);
+
+  useEffect(() => {
+    // Deferred to a microtask so the fetch trigger isn't a synchronous setState call in the effect body.
+    queueMicrotask(() => {
+      fetchDocuments();
+    });
+  }, [fetchDocuments]);
 
   async function handleUpload(e: React.FormEvent) {
     e.preventDefault();
@@ -169,9 +180,7 @@ export default function DocumentsPage() {
         <form onSubmit={handleUpload} className="space-y-4">
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                Entity Type
-              </label>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Entity Type</label>
               <select
                 value={uploadEntityType}
                 onChange={(e) => {
@@ -184,15 +193,14 @@ export default function DocumentsPage() {
                 <option value="">Select entity type</option>
                 {ENTITY_TYPES.map((type) => (
                   <option key={type} value={type}>
-                    {type.replace("_", " ").charAt(0).toUpperCase() + type.replace("_", " ").slice(1)}
+                    {type.replace("_", " ").charAt(0).toUpperCase() +
+                      type.replace("_", " ").slice(1)}
                   </option>
                 ))}
               </select>
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                Entity ID
-              </label>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Entity ID</label>
               <input
                 type="text"
                 value={uploadEntityId}
@@ -239,9 +247,7 @@ export default function DocumentsPage() {
           )}
 
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              File (Max 50MB)
-            </label>
+            <label className="block text-sm font-medium text-gray-700 mb-1">File (Max 50MB)</label>
             <input
               type="file"
               onChange={(e) => setUploadFile(e.target.files?.[0] || null)}
@@ -293,9 +299,7 @@ export default function DocumentsPage() {
                   <th className="px-6 py-3 text-left text-sm font-semibold text-gray-900">
                     File Name
                   </th>
-                  <th className="px-6 py-3 text-left text-sm font-semibold text-gray-900">
-                    Type
-                  </th>
+                  <th className="px-6 py-3 text-left text-sm font-semibold text-gray-900">Type</th>
                   <th className="px-6 py-3 text-left text-sm font-semibold text-gray-900">
                     Entity
                   </th>

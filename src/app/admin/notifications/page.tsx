@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { useAuth } from "@/core/context/auth-context";
 import { PageHeader } from "@/components/admin/PageHeader";
 import { format } from "date-fns";
@@ -24,12 +24,7 @@ export default function NotificationsPage() {
   const [filter, setFilter] = useState<"all" | "unread" | "archived">("all");
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    fetchNotifications();
-  }, [filter]);
-
-  async function fetchNotifications() {
+  const fetchNotifications = useCallback(async () => {
     try {
       setLoading(true);
       const params = new URLSearchParams();
@@ -46,7 +41,14 @@ export default function NotificationsPage() {
     } finally {
       setLoading(false);
     }
-  }
+  }, [filter]);
+
+  useEffect(() => {
+    // Deferred to a microtask so the fetch trigger isn't a synchronous setState call in the effect body.
+    queueMicrotask(() => {
+      fetchNotifications();
+    });
+  }, [fetchNotifications]);
 
   async function markAsRead(id: string) {
     try {
@@ -153,9 +155,7 @@ export default function NotificationsPage() {
             <div
               key={notification.id}
               className={`p-4 rounded-lg border transition ${
-                notification.is_read
-                  ? "bg-white border-gray-200"
-                  : "bg-blue-50 border-blue-200"
+                notification.is_read ? "bg-white border-gray-200" : "bg-blue-50 border-blue-200"
               }`}
             >
               <div className="flex items-start justify-between gap-4">
@@ -166,12 +166,8 @@ export default function NotificationsPage() {
                     <Circle className="w-5 h-5 text-blue-600 mt-1 shrink-0" />
                   )}
                   <div className="flex-1 min-w-0">
-                    <h3 className="font-semibold text-gray-900">
-                      {notification.title}
-                    </h3>
-                    <p className="text-gray-600 text-sm mt-1">
-                      {notification.message}
-                    </p>
+                    <h3 className="font-semibold text-gray-900">{notification.title}</h3>
+                    <p className="text-gray-600 text-sm mt-1">{notification.message}</p>
                     <p className="text-gray-500 text-xs mt-2">
                       {format(new Date(notification.created_at), "PPp")}
                     </p>

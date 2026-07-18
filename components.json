@@ -5,8 +5,8 @@
   "tsx": true,
   "aliasPrefix": "@",
   "alias": {
-    "@/components": "./src/shared/components",
+    "@/components": "./src/components",
     "@/lib": "./src/shared/utils",
-    "@/ui": "./src/shared/components/ui"
+    "@/ui": "./src/components/ui"
   }
 }

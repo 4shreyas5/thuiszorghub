@@ -5,14 +5,17 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { Employee, CreateEmployeePayload, UpdateEmployeePayload } from "@/types/employee";
 import { createEmployeeSchema, updateEmployeeSchema } from "@/core/validation/employee";
 import { Input } from "@/components/ui/Input";
+import { Select } from "@/components/ui/Select";
 import { Button } from "@/components/ui/Button";
 import { Textarea } from "@/components/ui/Textarea";
 import { useEffect, useState } from "react";
-import { Loader, AlertCircle } from "lucide-react";
+import { AlertTriangle } from "lucide-react";
+import { ICON_SIZE, ICON_STROKE_WIDTH } from "@/shared/constants/icons";
 
 interface Branch {
   id: string;
   name: string;
+  is_active: boolean;
 }
 
 interface EmployeeFormProps {
@@ -22,6 +25,20 @@ interface EmployeeFormProps {
 }
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
+
+const EMPLOYMENT_TYPE_OPTIONS = [
+  { value: "full-time", label: "Full-time" },
+  { value: "part-time", label: "Part-time" },
+  { value: "contract", label: "Contract" },
+  { value: "casual", label: "Casual" },
+];
+
+const STATUS_OPTIONS = [
+  { value: "active", label: "Active" },
+  { value: "inactive", label: "Inactive" },
+  { value: "on_leave", label: "On Leave" },
+  { value: "archived", label: "Archived" },
+];
 
 export function EmployeeForm({ employee, isLoading, onSubmit }: EmployeeFormProps) {
   const [branches, setBranches] = useState<Branch[]>([]);
@@ -47,6 +64,10 @@ export function EmployeeForm({ employee, isLoading, onSubmit }: EmployeeFormProp
           end_date: employee.end_date,
           hourly_rate: employee.hourly_rate,
           bio: employee.bio,
+          status: employee.status,
+          emergency_contact_name: employee.emergency_contact_name,
+          emergency_contact_phone: employee.emergency_contact_phone,
+          emergency_contact_relationship: employee.emergency_contact_relationship,
         }
       : {},
   });
@@ -55,10 +76,11 @@ export function EmployeeForm({ employee, isLoading, onSubmit }: EmployeeFormProp
     const fetchBranches = async () => {
       try {
         setLoadingBranches(true);
-        const response = await fetch("/api/branches");
+        const response = await fetch("/api/branches?page=1&limit=100");
         if (response.ok) {
-          const data = await response.json();
-          setBranches(Array.isArray(data) ? data : data.branches || []);
+          const result = await response.json();
+          const allBranches: Branch[] = result.data || [];
+          setBranches(allBranches.filter((b) => b.is_active));
         }
       } catch (error) {
         console.error("Failed to fetch branches:", error);
@@ -89,191 +111,145 @@ export function EmployeeForm({ employee, isLoading, onSubmit }: EmployeeFormProp
   };
 
   return (
-    <form onSubmit={handleSubmit(handleFormSubmit)} className="space-y-6">
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        {/* First Name */}
-        <div>
-          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-            First Name *
-          </label>
+    <form onSubmit={handleSubmit(handleFormSubmit)} className="space-y-8">
+      <div>
+        <h3 className="text-sm font-semibold text-foreground">Basic Information</h3>
+        <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2">
           <Input
+            label="First Name"
+            required
             placeholder="John"
             {...register("first_name")}
             error={getErrorMessage(errors.first_name)}
           />
-        </div>
-
-        {/* Last Name */}
-        <div>
-          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-            Last Name *
-          </label>
           <Input
+            label="Last Name"
+            required
             placeholder="Doe"
             {...register("last_name")}
             error={getErrorMessage(errors.last_name)}
           />
-        </div>
-
-        {/* Email */}
-        <div>
-          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-            Email *
-          </label>
           <Input
+            label="Email"
+            required
             type="email"
             placeholder="john@example.com"
             {...register("email")}
             error={getErrorMessage(errors.email)}
           />
-        </div>
-
-        {/* Phone */}
-        <div>
-          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-            Phone
-          </label>
           <Input
+            label="Phone"
             type="tel"
             placeholder="+31 6 12345678"
             {...register("phone")}
             error={getErrorMessage(errors.phone)}
           />
         </div>
+      </div>
 
-        {/* Branch */}
-        <div>
-          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-            Branch *
-          </label>
-          <div className="relative">
-            <select
+      <div>
+        <h3 className="text-sm font-semibold text-foreground">Employment</h3>
+        <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2">
+          <div>
+            <Select
+              label="Branch"
+              required
+              placeholder={loadingBranches ? "Loading branches..." : "Select a branch..."}
+              disabled={loadingBranches || branches.length === 0}
+              options={branches.map((b) => ({ value: b.id, label: b.name }))}
               {...register("branch_id")}
-              className={`
-                w-full px-4 py-2 rounded-lg border appearance-none transition-colors
-                bg-white dark:bg-gray-700 text-gray-900 dark:text-white
-                focus:outline-none focus:ring-2 focus:ring-offset-0
-                disabled:opacity-50 disabled:cursor-not-allowed
-                ${
-                  errors.branch_id
-                    ? "border-red-500 dark:border-red-400 focus:ring-red-500"
-                    : "border-gray-300 dark:border-gray-600 focus:ring-blue-500"
-                }
-              `}
-              disabled={loadingBranches}
-            >
-              <option value="">Select a branch...</option>
-              {loadingBranches ? (
-                <option disabled>Loading branches...</option>
-              ) : (
-                branches.map((branch) => (
-                  <option key={branch.id} value={branch.id}>
-                    {branch.name}
-                  </option>
-                ))
-              )}
-            </select>
+              error={getErrorMessage(errors.branch_id)}
+            />
+            {!loadingBranches && branches.length === 0 && (
+              <p className="mt-1.5 flex items-center gap-1 text-sm text-warning-foreground">
+                <AlertTriangle className={ICON_SIZE.sm} strokeWidth={ICON_STROKE_WIDTH} />
+                No active branches available
+              </p>
+            )}
           </div>
-          {getErrorMessage(errors.branch_id) && (
-            <p className="text-sm text-red-600 dark:text-red-400 flex items-center gap-1 mt-1">
-              <AlertCircle className="w-4 h-4" />
-              {getErrorMessage(errors.branch_id)}
-            </p>
-          )}
-        </div>
-
-        {/* Employment Type */}
-        <div>
-          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-            Employment Type *
-          </label>
-          <div className="relative">
-            <select
-              {...register("employment_type")}
-              className={`
-                w-full px-4 py-2 rounded-lg border appearance-none transition-colors
-                bg-white dark:bg-gray-700 text-gray-900 dark:text-white
-                focus:outline-none focus:ring-2 focus:ring-offset-0
-                disabled:opacity-50 disabled:cursor-not-allowed
-                ${
-                  errors.employment_type
-                    ? "border-red-500 dark:border-red-400 focus:ring-red-500"
-                    : "border-gray-300 dark:border-gray-600 focus:ring-blue-500"
-                }
-              `}
-            >
-              <option value="">Select employment type...</option>
-              <option value="full-time">Full-time</option>
-              <option value="part-time">Part-time</option>
-              <option value="contract">Contract</option>
-              <option value="casual">Casual</option>
-            </select>
-          </div>
-          {getErrorMessage(errors.employment_type) && (
-            <p className="text-sm text-red-600 dark:text-red-400 flex items-center gap-1 mt-1">
-              <AlertCircle className="w-4 h-4" />
-              {getErrorMessage(errors.employment_type)}
-            </p>
-          )}
-        </div>
-
-        {/* Start Date */}
-        <div>
-          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-            Start Date *
-          </label>
+          <Select
+            label="Employment Type"
+            required
+            placeholder="Select employment type..."
+            options={EMPLOYMENT_TYPE_OPTIONS}
+            {...register("employment_type")}
+            error={getErrorMessage(errors.employment_type)}
+          />
           <Input
+            label="Start Date"
+            required
             type="date"
             {...register("start_date")}
             error={getErrorMessage(errors.start_date)}
           />
-        </div>
-
-        {/* End Date */}
-        <div>
-          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-            End Date
-          </label>
           <Input
+            label="End Date"
             type="date"
+            helperText="Leave blank for permanent employment"
             {...register("end_date")}
             error={getErrorMessage(errors.end_date)}
           />
-        </div>
-
-        {/* Hourly Rate */}
-        <div>
-          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-            Hourly Rate (€)
-          </label>
           <Input
+            label="Hourly Rate (€)"
             type="number"
             placeholder="25.00"
             step="0.01"
             {...register("hourly_rate", { valueAsNumber: true })}
             error={getErrorMessage(errors.hourly_rate)}
           />
+          {employee && (
+            <Select
+              label="Status"
+              options={STATUS_OPTIONS}
+              {...register("status")}
+              error={getErrorMessage(errors.status)}
+              helperText="Archiving is reversible - use the Activate action on an archived employee to restore them."
+            />
+          )}
         </div>
       </div>
 
-      {/* Bio */}
       <div>
-        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-          Bio
-        </label>
-        <Textarea
-          placeholder="Additional information about the employee..."
-          {...register("bio")}
-          error={getErrorMessage(errors.bio)}
-          rows={4}
-        />
+        <h3 className="text-sm font-semibold text-foreground">Emergency Contact</h3>
+        <p className="mt-0.5 text-sm text-muted-foreground">
+          Who to reach if something happens during a shift.
+        </p>
+        <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-3">
+          <Input
+            label="Name"
+            {...register("emergency_contact_name")}
+            error={getErrorMessage(errors.emergency_contact_name)}
+          />
+          <Input
+            label="Phone"
+            type="tel"
+            {...register("emergency_contact_phone")}
+            error={getErrorMessage(errors.emergency_contact_phone)}
+          />
+          <Input
+            label="Relationship"
+            placeholder="Spouse, parent, sibling..."
+            {...register("emergency_contact_relationship")}
+            error={getErrorMessage(errors.emergency_contact_relationship)}
+          />
+        </div>
       </div>
 
-      {/* Submit Button */}
-      <div className="flex gap-4">
-        <Button type="submit" disabled={isLoading} className="flex gap-2 items-center">
-          {isLoading && <Loader className="w-4 h-4 animate-spin" />}
-          {employee ? "Update Employee" : "Create Employee"}
+      <div>
+        <h3 className="text-sm font-semibold text-foreground">Notes</h3>
+        <div className="mt-4">
+          <Textarea
+            placeholder="Additional information about the employee..."
+            {...register("bio")}
+            error={getErrorMessage(errors.bio)}
+            rows={4}
+          />
+        </div>
+      </div>
+
+      <div className="flex gap-3 border-t border-border pt-6">
+        <Button type="submit" loading={isLoading}>
+          {employee ? "Save Changes" : "Create Employee"}
         </Button>
       </div>
     </form>

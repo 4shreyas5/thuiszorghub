@@ -58,8 +58,12 @@ export default function AuditLogsPage() {
         setLogs(result.data);
         setTotal(result.pagination.total);
 
-        const uniqueActions = [...new Set(result.data.map((l: AuditLog) => l.action))].sort() as string[];
-        const uniqueEntities = [...new Set(result.data.map((l: AuditLog) => l.entity_type))].sort() as string[];
+        const uniqueActions = [
+          ...new Set(result.data.map((l: AuditLog) => l.action)),
+        ].sort() as string[];
+        const uniqueEntities = [
+          ...new Set(result.data.map((l: AuditLog) => l.entity_type)),
+        ].sort() as string[];
         setActions(uniqueActions);
         setEntities(uniqueEntities);
       }
@@ -71,9 +75,12 @@ export default function AuditLogsPage() {
   }, [page, selectedAction, selectedEntity]);
 
   useEffect(() => {
-    if (authUser) {
-      fetchLogs();
-    }
+    // Deferred to a microtask so the fetch trigger isn't a synchronous setState call in the effect body.
+    queueMicrotask(() => {
+      if (authUser) {
+        fetchLogs();
+      }
+    });
   }, [authUser, fetchLogs]);
 
   if (!authUser) {
@@ -146,17 +153,27 @@ export default function AuditLogsPage() {
               <table className="w-full">
                 <thead className="bg-gray-50 dark:bg-gray-700">
                   <tr>
-                    <th className="px-6 py-3 text-left text-sm font-semibold text-gray-900 dark:text-gray-100">User</th>
-                    <th className="px-6 py-3 text-left text-sm font-semibold text-gray-900 dark:text-gray-100">Action</th>
-                    <th className="px-6 py-3 text-left text-sm font-semibold text-gray-900 dark:text-gray-100">Entity</th>
-                    <th className="px-6 py-3 text-left text-sm font-semibold text-gray-900 dark:text-gray-100">Date</th>
+                    <th className="px-6 py-3 text-left text-sm font-semibold text-gray-900 dark:text-gray-100">
+                      User
+                    </th>
+                    <th className="px-6 py-3 text-left text-sm font-semibold text-gray-900 dark:text-gray-100">
+                      Action
+                    </th>
+                    <th className="px-6 py-3 text-left text-sm font-semibold text-gray-900 dark:text-gray-100">
+                      Entity
+                    </th>
+                    <th className="px-6 py-3 text-left text-sm font-semibold text-gray-900 dark:text-gray-100">
+                      Date
+                    </th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
                   {logs.map((log) => (
                     <tr key={log.id} className="hover:bg-gray-50 dark:hover:bg-gray-700/50">
                       <td className="px-6 py-4 text-sm">
-                        <div className="font-medium text-gray-900 dark:text-gray-100">{log.users.first_name} {log.users.last_name}</div>
+                        <div className="font-medium text-gray-900 dark:text-gray-100">
+                          {log.users.first_name} {log.users.last_name}
+                        </div>
                         <div className="text-xs text-gray-500">{log.users.email}</div>
                       </td>
                       <td className="px-6 py-4 text-sm">
@@ -166,7 +183,9 @@ export default function AuditLogsPage() {
                       </td>
                       <td className="px-6 py-4 text-sm text-gray-600 dark:text-gray-400">
                         {log.entity_type}
-                        {log.entity_id && <div className="text-xs text-gray-500 font-mono">{log.entity_id}</div>}
+                        {log.entity_id && (
+                          <div className="text-xs text-gray-500 font-mono">{log.entity_id}</div>
+                        )}
                       </td>
                       <td className="px-6 py-4 text-sm text-gray-600 dark:text-gray-400">
                         {new Date(log.created_at).toLocaleString()}

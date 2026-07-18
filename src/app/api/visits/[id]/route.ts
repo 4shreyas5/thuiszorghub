@@ -2,11 +2,9 @@
 import { createServerClient } from "@/core/database/server";
 import { NextRequest, NextResponse } from "next/server";
 import { updateVisitSchema } from "@/core/validation/visit";
+import { checkVisitConflicts } from "@/core/scheduling/conflicts";
 
-export async function GET(
-  _request: NextRequest,
-  { params }: { params: Promise<{ id: string }> }
-) {
+export async function GET(_request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
     const { id } = await params;
     const supabase = await createServerClient();
@@ -36,14 +34,13 @@ export async function GET(
   }
 }
 
-export async function PUT(
-  request: NextRequest,
-  { params }: { params: Promise<{ id: string }> }
-) {
+export async function PUT(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
     const { id } = await params;
     const supabase = await createServerClient();
-    const { data: { user } } = await supabase.auth.getUser();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
 
     if (!user) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -78,7 +75,10 @@ export async function PUT(
       }
 
       if (client.organization_id !== organizationId) {
-        return NextResponse.json({ error: "Cross-organization visit not allowed" }, { status: 403 });
+        return NextResponse.json(
+          { error: "Cross-organization visit not allowed" },
+          { status: 403 }
+        );
       }
     }
 
@@ -95,36 +95,38 @@ export async function PUT(
       }
 
       if (employee.organization_id !== organizationId) {
-        return NextResponse.json({ error: "Cross-organization visit not allowed" }, { status: 403 });
+        return NextResponse.json(
+          { error: "Cross-organization visit not allowed" },
+          { status: 403 }
+        );
       }
     }
 
     // Check for scheduling conflicts if date/time changed
-    if (validatedData.employee_id || validatedData.scheduled_date || validatedData.start_time || validatedData.end_time) {
+    if (
+      validatedData.employee_id ||
+      validatedData.scheduled_date ||
+      validatedData.start_time ||
+      validatedData.end_time
+    ) {
       const checkEmployeeId = validatedData.employee_id || existingVisit.employee_id;
       const checkDate = validatedData.scheduled_date || existingVisit.scheduled_date;
       const checkStartTime = validatedData.start_time || existingVisit.start_time;
       const checkEndTime = validatedData.end_time || existingVisit.end_time;
 
       if (checkEmployeeId) {
-        const { data: conflicts } = await (supabase.from("scheduled_visits") as any)
-          .select("*")
-          .eq("organization_id", organizationId)
-          .eq("employee_id", checkEmployeeId)
-          .eq("scheduled_date", checkDate)
-          .neq("id", id)
-          .eq("is_deleted", false);
-
-        const hasConflict = conflicts?.some((visit: any) => {
-          const visitStart = new Date(`2000-01-01T${visit.start_time}`);
-          const visitEnd = new Date(`2000-01-01T${visit.end_time}`);
-          const newStart = new Date(`2000-01-01T${checkStartTime}`);
-          const newEnd = new Date(`2000-01-01T${checkEndTime}`);
-
-          return !(newEnd <= visitStart || newStart >= visitEnd);
+        // Shared helper (src/core/scheduling/conflicts.ts) - see the same
+        // consolidation note in POST /api/visits.
+        const conflicts = await checkVisitConflicts(supabase, {
+          employeeId: checkEmployeeId,
+          clientId: validatedData.client_id || existingVisit.client_id,
+          scheduledDate: checkDate,
+          startTime: checkStartTime,
+          endTime: checkEndTime,
+          excludeVisitId: id,
         });
 
-        if (hasConflict) {
+        if (conflicts.some((c) => c.type === "DOUBLE_BOOKING")) {
           return NextResponse.json(
             { error: "Employee has a scheduling conflict at this time" },
             { status: 409 }
@@ -137,7 +139,7 @@ export async function PUT(
     const { data: visit, error } = await (supabase.from("scheduled_visits") as any)
       .update({
         ...validatedData,
-        updated_at: new Date().toISOString()
+        updated_at: new Date().toISOString(),
       })
       .eq("id", id)
       .select()
@@ -153,7 +155,7 @@ export async function PUT(
       resource_type: "scheduled_visits",
       resource_id: id,
       action: "updated",
-      changes: { previous_values: existingVisit, new_values: visit }
+      changes: { previous_values: existingVisit, new_values: visit },
     });
 
     // Log to visit history
@@ -163,7 +165,7 @@ export async function PUT(
       action: "updated",
       action_by_id: user.id,
       previous_values: existingVisit,
-      new_values: visit
+      new_values: visit,
     });
 
     return NextResponse.json(visit);
@@ -176,20 +178,25 @@ export async function PUT(
   }
 }
 
-export async function PATCH(
-  request: NextRequest,
-  { params }: { params: Promise<{ id: string }> }
-) {
+export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
     const { id } = await params;
     const supabase = await createServerClient();
-    const { data: { user } } = await supabase.auth.getUser();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
 
     if (!user) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
     const body = await request.json();
+
+    // Validated against the same schema PUT uses - this previously spread
+    // the raw request body directly into the update() call with zero
+    // validation, a mass-assignment gap (any column, including
+    // organization_id, could be overwritten by whatever the caller sent).
+    const validatedData = updateVisitSchema.parse(body);
 
     // Get existing visit
     const { data: existingVisit } = await (supabase.from("scheduled_visits") as any)
@@ -204,8 +211,8 @@ export async function PATCH(
     // Update visit
     const { data: visit, error } = await (supabase.from("scheduled_visits") as any)
       .update({
-        ...body,
-        updated_at: new Date().toISOString()
+        ...validatedData,
+        updated_at: new Date().toISOString(),
       })
       .eq("id", id)
       .select()
@@ -221,7 +228,7 @@ export async function PATCH(
       resource_type: "scheduled_visits",
       resource_id: id,
       action: "updated",
-      changes: { previous_values: existingVisit, new_values: visit }
+      changes: { previous_values: existingVisit, new_values: visit },
     });
 
     // Log to visit history
@@ -231,7 +238,7 @@ export async function PATCH(
       action: "updated",
       action_by_id: user.id,
       previous_values: existingVisit,
-      new_values: visit
+      new_values: visit,
     });
 
     return NextResponse.json(visit);
@@ -248,7 +255,9 @@ export async function DELETE(
   try {
     const { id } = await params;
     const supabase = await createServerClient();
-    const { data: { user } } = await supabase.auth.getUser();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
 
     if (!user) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -268,7 +277,7 @@ export async function DELETE(
     const { error } = await (supabase.from("scheduled_visits") as any)
       .update({
         is_deleted: true,
-        deleted_at: new Date().toISOString()
+        deleted_at: new Date().toISOString(),
       })
       .eq("id", id);
 
@@ -282,7 +291,7 @@ export async function DELETE(
       resource_type: "scheduled_visits",
       resource_id: id,
       action: "deleted",
-      changes: { previous_values: existingVisit }
+      changes: { previous_values: existingVisit },
     });
 
     // Log to visit history
@@ -291,7 +300,7 @@ export async function DELETE(
       scheduled_visit_id: id,
       action: "deleted",
       action_by_id: user.id,
-      previous_values: existingVisit
+      previous_values: existingVisit,
     });
 
     return NextResponse.json({ success: true });

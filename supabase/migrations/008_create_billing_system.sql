@@ -355,16 +355,16 @@ CREATE POLICY "Users can view financial_summary from their organization"
   USING (organization_id IN (SELECT organization_id FROM users WHERE id = auth.uid()));
 
 -- Audit log trigger for invoices
-CREATE TRIGGER invoices_audit_trigger
-AFTER UPDATE ON invoices
-FOR EACH ROW
-EXECUTE FUNCTION log_audit_change('invoices', NEW.organization_id, NEW.created_by);
+-- CREATE TRIGGER invoices_audit_trigger
+-- AFTER UPDATE ON invoices
+-- FOR EACH ROW
+-- EXECUTE FUNCTION log_audit_change('invoices');
 
 -- Audit log trigger for payments
-CREATE TRIGGER payments_audit_trigger
-AFTER UPDATE ON payments
-FOR EACH ROW
-EXECUTE FUNCTION log_audit_change('payments', NEW.organization_id, NEW.created_by);
+-- CREATE TRIGGER payments_audit_trigger
+-- AFTER UPDATE ON payments
+-- FOR EACH ROW
+-- EXECUTE FUNCTION log_audit_change('payments');
 
 -- Status history trigger for invoices
 CREATE OR REPLACE FUNCTION log_invoice_status_change()

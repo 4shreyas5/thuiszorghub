@@ -1,13 +1,42 @@
- 
 "use client";
 
 import { useState, useCallback, useEffect } from "react";
-import { PageHeader } from "@/components/admin/PageHeader";
-import { Badge } from "@/components/ui/Badge";
-import { Button } from "@/components/ui/Button";
-import { Skeleton } from "@/components/ui/Skeleton";
 import Link from "next/link";
-import { ChevronLeft, ChevronRight, Trash2, ChevronDown } from "lucide-react";
+import { useRouter } from "next/navigation";
+import {
+  Search,
+  CalendarDays,
+  AlertTriangle,
+  MoreHorizontal,
+  Eye,
+  Pencil,
+  XCircle,
+} from "lucide-react";
+import { PageHeader } from "@/components/admin/PageHeader";
+import { StatusBadge } from "@/components/ui/Badge";
+import { Input } from "@/components/ui/Input";
+import { Select } from "@/components/ui/Select";
+import { Button } from "@/components/ui/Button";
+import { Card } from "@/components/ui/Card";
+import { Skeleton } from "@/components/ui/Skeleton";
+import { EmptyState } from "@/components/ui/EmptyState";
+import { Pagination } from "@/components/ui/Pagination";
+import {
+  Table,
+  TableHead,
+  TableBody,
+  TableRow,
+  TableHeaderCell,
+  TableCell,
+} from "@/components/ui/Table";
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+} from "@/components/ui/DropdownMenu";
+import { useDebounce } from "@/hooks/useDebounce";
+import { ICON_SIZE, ICON_STROKE_WIDTH } from "@/shared/constants/icons";
 
 interface PaginationData {
   page: number;
@@ -16,27 +45,38 @@ interface PaginationData {
   pages: number;
 }
 
-type VisitRow = {
+interface VisitRow {
   id: string;
-  client_id: string;
-  employee_id: string | null;
-  branch_id: string;
   title: string;
-  visit_type: string;
   scheduled_date: string;
   start_time: string;
   end_time: string;
   status: string;
-  priority: string;
-  estimated_duration_minutes?: number;
   client?: { first_name: string; last_name: string };
-  employee?: { first_name: string; last_name: string };
-  branch?: { name: string };
-};
+  employee?: { first_name: string; last_name: string } | null;
+}
+
+interface Option {
+  id: string;
+  first_name: string;
+  last_name: string;
+}
+
+const STATUS_OPTIONS = [
+  { value: "", label: "All statuses" },
+  { value: "scheduled", label: "Scheduled" },
+  { value: "confirmed", label: "Confirmed" },
+  { value: "in_progress", label: "In Progress" },
+  { value: "completed", label: "Completed" },
+  { value: "cancelled", label: "Cancelled" },
+  { value: "no_show", label: "No Show" },
+];
 
 export default function VisitsPage() {
+  const router = useRouter();
   const [visits, setVisits] = useState<VisitRow[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [pagination, setPagination] = useState<PaginationData>({
     page: 1,
     limit: 20,
@@ -44,61 +84,83 @@ export default function VisitsPage() {
     pages: 1,
   });
 
+  const [search, setSearch] = useState("");
   const [status, setStatus] = useState("");
-  const [sortBy, setSortBy] = useState("scheduled_date");
-  const [sortOrder, setSortOrder] = useState("asc");
+  const [employeeId, setEmployeeId] = useState("");
+  const [clientId, setClientId] = useState("");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+  const [employees, setEmployees] = useState<Option[]>([]);
+  const [clients, setClients] = useState<Option[]>([]);
+
+  const debouncedSearch = useDebounce(search, 500);
 
   const fetchVisits = useCallback(
     async (page = 1) => {
       try {
         setLoading(true);
+        setLoadError(null);
         const params = new URLSearchParams({
           page: page.toString(),
           limit: pagination.limit.toString(),
-          sortBy,
-          sortOrder,
+          search: debouncedSearch,
+          status,
+          employeeId,
+          clientId,
+          dateFrom,
+          dateTo,
         });
 
-        if (status) {
-          params.append("status", status);
-        }
-
         const response = await fetch(`/api/visits?${params}`);
-        if (!response.ok) throw new Error("Failed to fetch visits");
-
         const data = await response.json();
+        if (!response.ok) throw new Error(data.error || "Failed to fetch visits");
+
         setVisits(data.visits);
         setPagination(data.pagination);
       } catch (error) {
-        console.error("Error fetching visits:", error);
+        setLoadError(error instanceof Error ? error.message : "Failed to load visits");
       } finally {
         setLoading(false);
       }
     },
-    [pagination.limit, status, sortBy, sortOrder]
+    [pagination.limit, debouncedSearch, status, employeeId, clientId, dateFrom, dateTo]
   );
 
   useEffect(() => {
-    fetchVisits(1);
-  }, [status, sortBy, sortOrder, fetchVisits]);
+    // Deferred to a microtask so the fetch trigger isn't a synchronous setState call in the effect body.
+    queueMicrotask(() => {
+      fetchVisits(1);
+    });
+  }, [debouncedSearch, status, employeeId, clientId, dateFrom, dateTo, fetchVisits]);
 
   useEffect(() => {
-    if (pagination.page > 1) {
-      fetchVisits(pagination.page);
-    }
+    queueMicrotask(() => {
+      if (pagination.page > 1) {
+        fetchVisits(pagination.page);
+      }
+    });
   }, [pagination.page, fetchVisits]);
 
-  const handleDelete = async (id: string) => {
-    if (!confirm("Are you sure you want to cancel this visit?")) return;
+  useEffect(() => {
+    fetch("/api/employees?page=1&limit=200")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => d?.employees && setEmployees(d.employees))
+      .catch(() => {});
+    fetch("/api/clients?page=1&limit=200")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => d?.clients && setClients(d.clients))
+      .catch(() => {});
+  }, []);
 
+  const handleCancel = async (id: string) => {
     try {
-      const response = await fetch(`/api/visits/${id}`, {
-        method: "DELETE",
+      const response = await fetch(`/api/visits/${id}/complete`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: "cancelled" }),
       });
-
       if (!response.ok) throw new Error("Failed to cancel visit");
-
-      await fetchVisits();
+      await fetchVisits(pagination.page);
     } catch (error) {
       console.error("Error cancelling visit:", error);
     }
@@ -108,256 +170,201 @@ export default function VisitsPage() {
     setPagination((p) => ({ ...p, page: newPage }));
   };
 
-  const getStatusColor = (status: string) => {
-    switch (status) {
-      case "scheduled":
-        return "default";
-      case "confirmed":
-        return "success";
-      case "in_progress":
-        return "warning";
-      case "completed":
-        return "primary";
-      case "cancelled":
-        return "danger";
-      case "no_show":
-        return "danger";
-      default:
-        return "default";
-    }
-  };
-
-  const getPriorityColor = (priority: string) => {
-    switch (priority) {
-      case "low":
-        return "default";
-      case "normal":
-        return "primary";
-      case "high":
-        return "warning";
-      case "urgent":
-        return "danger";
-      default:
-        return "default";
-    }
-  };
-
-  const formatTime = (date: string) => {
-    return new Date(date).toLocaleDateString("nl-NL");
-  };
+  const hasFilters = !!(search || status || employeeId || clientId || dateFrom || dateTo);
 
   return (
     <div className="space-y-6">
       <PageHeader
         title="Visits"
-        description="Manage and schedule care visits"
-        action={{
-          label: "+ New Visit",
-          href: "/admin/visits/new",
-        }}
+        description="Every scheduled, in-progress and completed visit."
+        action={{ label: "New Visit", href: "/admin/visits/new" }}
       />
 
-      {/* Filters */}
-      <div className="bg-white dark:bg-gray-800 rounded-lg p-6 space-y-4">
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <div className="relative">
-            <select
-              value={status}
-              onChange={(e) => setStatus(e.target.value)}
-              className="w-full px-4 py-2 rounded-lg border appearance-none transition-colors bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-offset-0 border-gray-300 dark:border-gray-600 focus:ring-blue-500"
-            >
-              <option value="">All Status</option>
-              <option value="scheduled">Scheduled</option>
-              <option value="confirmed">Confirmed</option>
-              <option value="in_progress">In Progress</option>
-              <option value="completed">Completed</option>
-              <option value="cancelled">Cancelled</option>
-              <option value="no_show">No Show</option>
-            </select>
-            <ChevronDown className="absolute right-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" />
+      <Card bordered padding="md" className="space-y-4">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">
+          <div className="lg:col-span-2">
+            <Input
+              placeholder="Search by visit title..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              icon={<Search className={ICON_SIZE.sm} strokeWidth={ICON_STROKE_WIDTH} />}
+            />
           </div>
-
-          <div className="relative">
-            <select
-              value={sortBy}
-              onChange={(e) => setSortBy(e.target.value)}
-              className="w-full px-4 py-2 rounded-lg border appearance-none transition-colors bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-offset-0 border-gray-300 dark:border-gray-600 focus:ring-blue-500"
-            >
-              <option value="scheduled_date">Date</option>
-              <option value="start_time">Time</option>
-              <option value="priority">Priority</option>
-              <option value="status">Status</option>
-            </select>
-            <ChevronDown className="absolute right-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" />
+          <Select
+            value={status}
+            onChange={(e) => setStatus(e.target.value)}
+            options={STATUS_OPTIONS}
+          />
+          <Select
+            value={employeeId}
+            onChange={(e) => setEmployeeId(e.target.value)}
+            options={[
+              { value: "", label: "All employees" },
+              ...employees.map((e) => ({ value: e.id, label: `${e.first_name} ${e.last_name}` })),
+            ]}
+          />
+          <Select
+            value={clientId}
+            onChange={(e) => setClientId(e.target.value)}
+            options={[
+              { value: "", label: "All clients" },
+              ...clients.map((c) => ({ value: c.id, label: `${c.first_name} ${c.last_name}` })),
+            ]}
+          />
+        </div>
+        <div className="flex flex-wrap items-end justify-end gap-3">
+          <div className="w-44">
+            <Input
+              label="From"
+              type="date"
+              value={dateFrom}
+              onChange={(e) => setDateFrom(e.target.value)}
+            />
           </div>
-
-          <div className="relative">
-            <select
-              value={sortOrder}
-              onChange={(e) => setSortOrder(e.target.value)}
-              className="w-full px-4 py-2 rounded-lg border appearance-none transition-colors bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-offset-0 border-gray-300 dark:border-gray-600 focus:ring-blue-500"
-            >
-              <option value="asc">Ascending</option>
-              <option value="desc">Descending</option>
-            </select>
-            <ChevronDown className="absolute right-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" />
+          <div className="w-44">
+            <Input
+              label="To"
+              type="date"
+              value={dateTo}
+              onChange={(e) => setDateTo(e.target.value)}
+            />
           </div>
         </div>
-      </div>
+      </Card>
 
-      {/* Table */}
-      <div className="bg-white dark:bg-gray-800 rounded-lg overflow-hidden">
-        {loading ? (
-          <div className="p-6 space-y-4">
-            {[...Array(5)].map((_, i) => (
-              <Skeleton key={i} className="h-12 w-full" />
-            ))}
-          </div>
-        ) : visits.length === 0 ? (
-          <div className="p-12 text-center">
-            <p className="text-gray-600 dark:text-gray-400">No visits found</p>
-          </div>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full">
-              <thead className="bg-gray-50 dark:bg-gray-700 border-b dark:border-gray-600">
-                <tr>
-                  <th className="px-6 py-3 text-left text-sm font-semibold text-gray-900 dark:text-white">
-                    Date & Time
-                  </th>
-                  <th className="px-6 py-3 text-left text-sm font-semibold text-gray-900 dark:text-white">
-                    Client
-                  </th>
-                  <th className="px-6 py-3 text-left text-sm font-semibold text-gray-900 dark:text-white">
-                    Employee
-                  </th>
-                  <th className="px-6 py-3 text-left text-sm font-semibold text-gray-900 dark:text-white">
-                    Type
-                  </th>
-                  <th className="px-6 py-3 text-left text-sm font-semibold text-gray-900 dark:text-white">
-                    Duration
-                  </th>
-                  <th className="px-6 py-3 text-left text-sm font-semibold text-gray-900 dark:text-white">
-                    Priority
-                  </th>
-                  <th className="px-6 py-3 text-left text-sm font-semibold text-gray-900 dark:text-white">
-                    Status
-                  </th>
-                  <th className="px-6 py-3 text-left text-sm font-semibold text-gray-900 dark:text-white">
-                    Actions
-                  </th>
-                </tr>
-              </thead>
-              <tbody className="divide-y dark:divide-gray-700">
-                {visits.map((visit) => (
-                  <tr
-                    key={visit.id}
-                    className="hover:bg-gray-50 dark:hover:bg-gray-700 transition"
-                  >
-                    <td className="px-6 py-4 text-sm">
-                      <div>
-                        <p className="font-medium text-gray-900 dark:text-white">
-                          {formatTime(visit.scheduled_date)}
-                        </p>
-                        <p className="text-xs text-gray-600 dark:text-gray-400">
-                          {visit.start_time} - {visit.end_time}
-                        </p>
-                      </div>
-                    </td>
-                    <td className="px-6 py-4 text-sm">
-                      <Link
-                        href={`/admin/clients/${visit.client_id}`}
-                        className="font-medium text-blue-600 hover:underline"
-                      >
-                        {visit.client?.first_name} {visit.client?.last_name}
-                      </Link>
-                    </td>
-                    <td className="px-6 py-4 text-sm">
-                      {visit.employee ? (
-                        <Link
-                          href={`/admin/employees/${visit.employee_id}`}
-                          className="font-medium text-blue-600 hover:underline"
-                        >
-                          {visit.employee.first_name} {visit.employee.last_name}
-                        </Link>
-                      ) : (
-                        <span className="text-gray-600 dark:text-gray-400">-</span>
-                      )}
-                    </td>
-                    <td className="px-6 py-4 text-sm text-gray-600 dark:text-gray-400">
-                      {visit.visit_type?.replace(/_/g, " ")}
-                    </td>
-                    <td className="px-6 py-4 text-sm text-gray-600 dark:text-gray-400">
-                      {visit.estimated_duration_minutes
-                        ? `${visit.estimated_duration_minutes}m`
-                        : "-"}
-                    </td>
-                    <td className="px-6 py-4 text-sm">
-                      <Badge variant={getPriorityColor(visit.priority)}>
-                        {visit.priority}
-                      </Badge>
-                    </td>
-                    <td className="px-6 py-4 text-sm">
-                      <Badge variant={getStatusColor(visit.status)}>
-                        {visit.status.replace(/_/g, " ")}
-                      </Badge>
-                    </td>
-                    <td className="px-6 py-4 text-sm flex gap-2">
-                      <Link
-                        href={`/admin/visits/${visit.id}`}
-                        className="text-blue-600 hover:text-blue-700"
-                      >
-                        Edit
-                      </Link>
-                      <button
-                        onClick={() => handleDelete(visit.id)}
-                        className="text-red-600 hover:text-red-700 flex gap-1 items-center"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                        Cancel
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
-
-      {/* Pagination */}
-      {pagination.pages > 1 && (
-        <div className="flex items-center justify-between bg-white dark:bg-gray-800 rounded-lg p-4">
-          <div className="text-sm text-gray-600 dark:text-gray-400">
-            Showing {(pagination.page - 1) * pagination.limit + 1} to{" "}
-            {Math.min(pagination.page * pagination.limit, pagination.total)} of{" "}
-            {pagination.total} visits
-          </div>
-          <div className="flex gap-2">
-            <Button
-              onClick={() => handlePageChange(pagination.page - 1)}
-              disabled={pagination.page === 1}
-              variant="secondary"
-            >
-              <ChevronLeft className="w-4 h-4" />
-            </Button>
-            {[...Array(pagination.pages)].map((_, i) => (
-              <Button
-                key={i + 1}
-                onClick={() => handlePageChange(i + 1)}
-                variant={pagination.page === i + 1 ? "primary" : "secondary"}
-              >
-                {i + 1}
+      {loading ? (
+        <Card bordered padding="md" className="space-y-3">
+          {[...Array(5)].map((_, i) => (
+            <Skeleton key={i} className="h-12 w-full" />
+          ))}
+        </Card>
+      ) : loadError ? (
+        <Card bordered padding="md">
+          <EmptyState
+            tone="error"
+            icon={AlertTriangle}
+            title="Couldn't load visits"
+            description={loadError}
+            action={
+              <Button variant="outline" onClick={() => fetchVisits(pagination.page)}>
+                Retry
               </Button>
-            ))}
-            <Button
-              onClick={() => handlePageChange(pagination.page + 1)}
-              disabled={pagination.page === pagination.pages}
-              variant="secondary"
-            >
-              <ChevronRight className="w-4 h-4" />
-            </Button>
-          </div>
+            }
+          />
+        </Card>
+      ) : visits.length === 0 ? (
+        <Card bordered padding="md">
+          <EmptyState
+            icon={hasFilters ? Search : CalendarDays}
+            title={hasFilters ? "No matching visits" : "No visits yet"}
+            description={
+              hasFilters
+                ? "Try a different search term or clearing a filter."
+                : "Schedule your first visit to start coordinating care."
+            }
+            action={
+              !hasFilters && (
+                <Button asChild>
+                  <Link href="/admin/visits/new">New Visit</Link>
+                </Button>
+              )
+            }
+          />
+        </Card>
+      ) : (
+        <div className="space-y-4">
+          <Table>
+            <TableHead>
+              <TableRow hover={false}>
+                <TableHeaderCell>Visit</TableHeaderCell>
+                <TableHeaderCell>Client</TableHeaderCell>
+                <TableHeaderCell>Employee</TableHeaderCell>
+                <TableHeaderCell>Date</TableHeaderCell>
+                <TableHeaderCell>Time</TableHeaderCell>
+                <TableHeaderCell>Status</TableHeaderCell>
+                <TableHeaderCell className="text-right">Actions</TableHeaderCell>
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              {visits.map((visit) => (
+                <TableRow key={visit.id}>
+                  <TableCell>
+                    <Link
+                      href={`/admin/visits/${visit.id}`}
+                      className="font-medium text-foreground hover:text-primary hover:underline"
+                    >
+                      {visit.title}
+                    </Link>
+                  </TableCell>
+                  <TableCell className="text-muted-foreground">
+                    {visit.client ? `${visit.client.first_name} ${visit.client.last_name}` : "—"}
+                  </TableCell>
+                  <TableCell className="text-muted-foreground">
+                    {visit.employee
+                      ? `${visit.employee.first_name} ${visit.employee.last_name}`
+                      : "Unassigned"}
+                  </TableCell>
+                  <TableCell className="text-muted-foreground">
+                    {new Date(visit.scheduled_date).toLocaleDateString("nl-NL")}
+                  </TableCell>
+                  <TableCell className="text-muted-foreground">
+                    {visit.start_time?.slice(0, 5)} - {visit.end_time?.slice(0, 5)}
+                  </TableCell>
+                  <TableCell>
+                    <StatusBadge status={visit.status} size="sm" />
+                  </TableCell>
+                  <TableCell align="right">
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-8 w-8 p-0"
+                          aria-label="Actions"
+                        >
+                          <MoreHorizontal
+                            className={ICON_SIZE.sm}
+                            strokeWidth={ICON_STROKE_WIDTH}
+                          />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end">
+                        <DropdownMenuItem onSelect={() => router.push(`/admin/visits/${visit.id}`)}>
+                          <Eye className={ICON_SIZE.sm} strokeWidth={ICON_STROKE_WIDTH} />
+                          View
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          onSelect={() => router.push(`/admin/visits/${visit.id}?edit=true`)}
+                        >
+                          <Pencil className={ICON_SIZE.sm} strokeWidth={ICON_STROKE_WIDTH} />
+                          Edit
+                        </DropdownMenuItem>
+                        {visit.status !== "completed" && visit.status !== "cancelled" && (
+                          <DropdownMenuItem onSelect={() => handleCancel(visit.id)}>
+                            <XCircle className={ICON_SIZE.sm} strokeWidth={ICON_STROKE_WIDTH} />
+                            Cancel
+                          </DropdownMenuItem>
+                        )}
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+
+          {pagination.pages > 1 && (
+            <div className="flex items-center justify-between">
+              <p className="text-sm text-muted-foreground">
+                {pagination.total} visit{pagination.total === 1 ? "" : "s"}
+              </p>
+              <Pagination
+                page={pagination.page}
+                pageCount={pagination.pages}
+                onPageChange={handlePageChange}
+              />
+            </div>
+          )}
         </div>
       )}
     </div>

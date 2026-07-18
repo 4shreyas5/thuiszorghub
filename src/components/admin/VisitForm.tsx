@@ -1,18 +1,18 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
 "use client";
 
 import { useState, useEffect } from "react";
-import { useForm } from "react-hook-form";
+import { useForm, useWatch } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { createVisitSchema, updateVisitSchema } from "@/core/validation/visit";
 import { Visit, CreateVisitPayload, UpdateVisitPayload, VisitType } from "@/types/visit";
+import type { VisitConflict } from "@/core/scheduling/conflicts";
 import { Button } from "@/components/ui/Button";
-import { AlertCircle } from "lucide-react";
+import { AlertCircle, AlertTriangle } from "lucide-react";
 
 interface VisitFormProps {
   visit?: Visit;
   isLoading?: boolean;
-  onSubmit: (data: any) => Promise<void>;
+  onSubmit: (data: CreateVisitPayload | UpdateVisitPayload) => Promise<void>;
 }
 
 interface Employee {
@@ -61,24 +61,27 @@ export function VisitForm({ visit, isLoading = false, onSubmit }: VisitFormProps
   const {
     register,
     handleSubmit,
+    control,
     formState: { errors, isSubmitting },
   } = useForm({
     resolver: zodResolver(schema),
-    defaultValues: visit ? {
-      client_id: visit.client_id || "",
-      employee_id: visit.employee_id || "",
-      branch_id: visit.branch_id || "",
-      care_plan_id: visit.care_plan_id || "",
-      title: visit.title || "",
-      visit_type: visit.visit_type || "personal_care",
-      description: visit.description || "",
-      scheduled_date: visit.scheduled_date || "",
-      start_time: visit.start_time || "",
-      end_time: visit.end_time || "",
-      estimated_duration_minutes: visit.estimated_duration_minutes || 0,
-      priority: visit.priority || "normal",
-      notes: visit.notes || "",
-    } : {},
+    defaultValues: visit
+      ? {
+          client_id: visit.client_id || "",
+          employee_id: visit.employee_id || "",
+          branch_id: visit.branch_id || "",
+          care_plan_id: visit.care_plan_id || "",
+          title: visit.title || "",
+          visit_type: visit.visit_type || "personal_care",
+          description: visit.description || "",
+          scheduled_date: visit.scheduled_date || "",
+          start_time: visit.start_time || "",
+          end_time: visit.end_time || "",
+          estimated_duration_minutes: visit.estimated_duration_minutes || 0,
+          priority: visit.priority || "normal",
+          notes: visit.notes || "",
+        }
+      : {},
   });
 
   useEffect(() => {
@@ -112,6 +115,47 @@ export function VisitForm({ visit, isLoading = false, onSubmit }: VisitFormProps
     fetchData();
   }, []);
 
+  const watchedEmployeeId = useWatch({ control, name: "employee_id" });
+  const watchedClientId = useWatch({ control, name: "client_id" });
+  const watchedDate = useWatch({ control, name: "scheduled_date" });
+  const watchedStart = useWatch({ control, name: "start_time" });
+  const watchedEnd = useWatch({ control, name: "end_time" });
+
+  const [conflicts, setConflicts] = useState<VisitConflict[]>([]);
+
+  useEffect(() => {
+    if (!watchedEmployeeId || !watchedDate || !watchedStart || !watchedEnd) {
+      // Deferred to a microtask so this setState call isn't synchronous within the effect body.
+      queueMicrotask(() => setConflicts([]));
+      return;
+    }
+
+    const timeout = setTimeout(async () => {
+      try {
+        const response = await fetch("/api/visits/conflicts", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            employeeId: watchedEmployeeId,
+            clientId: watchedClientId || undefined,
+            scheduledDate: watchedDate,
+            startTime: watchedStart,
+            endTime: watchedEnd,
+            excludeVisitId: visit?.id,
+          }),
+        });
+        if (response.ok) {
+          const data = await response.json();
+          setConflicts(data.conflicts || []);
+        }
+      } catch {
+        // Non-blocking pre-submit hint - a failed live check shouldn't stop the user.
+      }
+    }, 500);
+
+    return () => clearTimeout(timeout);
+  }, [watchedEmployeeId, watchedClientId, watchedDate, watchedStart, watchedEnd, visit?.id]);
+
   const handleFormSubmit = async (data: CreateVisitPayload | UpdateVisitPayload) => {
     try {
       setError(null);
@@ -127,6 +171,25 @@ export function VisitForm({ visit, isLoading = false, onSubmit }: VisitFormProps
         <div className="flex gap-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-4 text-red-700 dark:text-red-400">
           <AlertCircle className="w-5 h-5 flex-shrink-0 mt-0.5" />
           <p className="text-sm">{error}</p>
+        </div>
+      )}
+
+      {conflicts.length > 0 && (
+        <div className="flex gap-3 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg p-4 text-amber-800 dark:text-amber-400">
+          <AlertTriangle className="w-5 h-5 flex-shrink-0 mt-0.5" />
+          <div className="text-sm">
+            <p className="font-medium">Possible scheduling conflicts</p>
+            <ul className="mt-1 list-disc pl-4 space-y-0.5">
+              {conflicts.map((conflict, i) => (
+                <li key={i}>{conflict.message}</li>
+              ))}
+            </ul>
+            {!conflicts.some((c) => c.type === "DOUBLE_BOOKING") && (
+              <p className="mt-1 text-xs opacity-80">
+                This won&apos;t block saving, but double-bookings will.
+              </p>
+            )}
+          </div>
         </div>
       )}
 
@@ -146,9 +209,7 @@ export function VisitForm({ visit, isLoading = false, onSubmit }: VisitFormProps
           ))}
         </select>
         {errors.client_id && (
-          <p className="text-red-600 dark:text-red-400 text-sm mt-1">
-            {errors.client_id.message}
-          </p>
+          <p className="text-red-600 dark:text-red-400 text-sm mt-1">{errors.client_id.message}</p>
         )}
       </div>
 
@@ -190,9 +251,7 @@ export function VisitForm({ visit, isLoading = false, onSubmit }: VisitFormProps
           ))}
         </select>
         {errors.branch_id && (
-          <p className="text-red-600 dark:text-red-400 text-sm mt-1">
-            {errors.branch_id.message}
-          </p>
+          <p className="text-red-600 dark:text-red-400 text-sm mt-1">{errors.branch_id.message}</p>
         )}
       </div>
 
@@ -207,9 +266,7 @@ export function VisitForm({ visit, isLoading = false, onSubmit }: VisitFormProps
           className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
         />
         {errors.title && (
-          <p className="text-red-600 dark:text-red-400 text-sm mt-1">
-            {errors.title.message}
-          </p>
+          <p className="text-red-600 dark:text-red-400 text-sm mt-1">{errors.title.message}</p>
         )}
       </div>
 
@@ -229,9 +286,7 @@ export function VisitForm({ visit, isLoading = false, onSubmit }: VisitFormProps
           ))}
         </select>
         {errors.visit_type && (
-          <p className="text-red-600 dark:text-red-400 text-sm mt-1">
-            {errors.visit_type.message}
-          </p>
+          <p className="text-red-600 dark:text-red-400 text-sm mt-1">{errors.visit_type.message}</p>
         )}
       </div>
 
@@ -278,9 +333,7 @@ export function VisitForm({ visit, isLoading = false, onSubmit }: VisitFormProps
             className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
           />
           {errors.end_time && (
-            <p className="text-red-600 dark:text-red-400 text-sm mt-1">
-              {errors.end_time.message}
-            </p>
+            <p className="text-red-600 dark:text-red-400 text-sm mt-1">{errors.end_time.message}</p>
           )}
         </div>
       </div>
@@ -312,9 +365,7 @@ export function VisitForm({ visit, isLoading = false, onSubmit }: VisitFormProps
           className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
         />
         {errors.notes && (
-          <p className="text-red-600 dark:text-red-400 text-sm mt-1">
-            {errors.notes.message}
-          </p>
+          <p className="text-red-600 dark:text-red-400 text-sm mt-1">{errors.notes.message}</p>
         )}
       </div>
 

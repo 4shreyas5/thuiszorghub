@@ -14,7 +14,9 @@ interface OperationalFilters {
 export async function GET(request: NextRequest) {
   try {
     const supabase = await createServerClient();
-    const { data: { user } } = await supabase.auth.getUser();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
 
     if (!user) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -46,13 +48,16 @@ export async function GET(request: NextRequest) {
 
     // Get date range
     const now = new Date();
-    const startDate = filters.startDate || new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split('T')[0];
-    const endDate = filters.endDate || now.toISOString().split('T')[0];
+    const startDate =
+      filters.startDate ||
+      new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split("T")[0];
+    const endDate = filters.endDate || now.toISOString().split("T")[0];
 
     // Build query for scheduled visits
     let query = supabase
       .from("scheduled_visits")
-      .select(`
+      .select(
+        `
         id,
         status,
         visit_type,
@@ -61,7 +66,8 @@ export async function GET(request: NextRequest) {
         employee_id,
         client_id,
         branch_id
-      `)
+      `
+      )
       .eq("organization_id", organizationId)
       .gte("scheduled_date", startDate)
       .lte("scheduled_date", endDate);
@@ -76,41 +82,58 @@ export async function GET(request: NextRequest) {
 
     if (scheduledError) throw scheduledError;
 
-    // Get visit executions for completion rates
-    let executionQuery = supabase
+    // Get visit executions for completion rates. visit_executions has no
+    // employee_id/client_id/executed_date columns of its own (see
+    // supabase/migrations/009_create_visit_execution.sql and the gotcha
+    // documented in 011_reporting_analytics.sql:99-101) - those live on the
+    // parent scheduled_visits row, so date-range filtering uses the
+    // execution's own completed_at (same convention already proven in
+    // src/core/billing/billing-engine.ts), and employee/client filtering
+    // happens client-side on the embedded scheduled_visits fields.
+    const { data: rawExecutions, error: executionError } = await supabase
       .from("visit_executions")
-      .select(`
+      .select(
+        `
         id,
         status,
         scheduled_visit_id,
-        employee_id,
         actual_duration_minutes,
-        executed_date
-      `)
+        completed_at,
+        scheduled_visits(employee_id, client_id, branch_id)
+      `
+      )
       .eq("organization_id", organizationId)
-      .gte("executed_date", startDate)
-      .lte("executed_date", endDate);
-
-    if (filters.employeeId) executionQuery = executionQuery.eq("employee_id", filters.employeeId);
-
-    const { data: executions, error: executionError } = await executionQuery;
+      .gte("completed_at", `${startDate}T00:00:00Z`)
+      .lte("completed_at", `${endDate}T23:59:59Z`);
 
     if (executionError) throw executionError;
 
+    const executions = (rawExecutions || []).filter((e) => {
+      const scheduled = e.scheduled_visits as unknown as {
+        employee_id?: string;
+        client_id?: string;
+      } | null;
+      if (filters.employeeId && scheduled?.employee_id !== filters.employeeId) return false;
+      if (filters.clientId && scheduled?.client_id !== filters.clientId) return false;
+      return true;
+    });
+
     // Calculate metrics
     const totalScheduled = scheduledVisits?.length || 0;
-    const completed = executions?.filter(e => e.status === "completed").length || 0;
-    const cancelled = scheduledVisits?.filter(v => v.status === "cancelled").length || 0;
+    const completed = executions?.filter((e) => e.status === "completed").length || 0;
+    const cancelled = scheduledVisits?.filter((v) => v.status === "cancelled").length || 0;
     const noShows = totalScheduled - (completed || 0) - cancelled;
     const completionRate = totalScheduled > 0 ? (completed / totalScheduled) * 100 : 0;
 
-    const avgDuration = executions && executions.length > 0
-      ? executions.reduce((sum, e) => sum + (e.actual_duration_minutes || 0), 0) / executions.length
-      : 0;
+    const avgDuration =
+      executions && executions.length > 0
+        ? executions.reduce((sum, e) => sum + (e.actual_duration_minutes || 0), 0) /
+          executions.length
+        : 0;
 
     // Get unique employees and clients
-    const uniqueEmployees = new Set(scheduledVisits?.map(v => v.employee_id) || []).size;
-    const uniqueClients = new Set(scheduledVisits?.map(v => v.client_id) || []).size;
+    const uniqueEmployees = new Set(scheduledVisits?.map((v) => v.employee_id) || []).size;
+    const uniqueClients = new Set(scheduledVisits?.map((v) => v.client_id) || []).size;
 
     // Get assignments count
     const { data: assignments } = await supabase
@@ -122,33 +145,33 @@ export async function GET(request: NextRequest) {
 
     // Daily visit counts
     const visitsByDay: Record<string, number> = {};
-    scheduledVisits?.forEach(v => {
+    scheduledVisits?.forEach((v) => {
       visitsByDay[v.scheduled_date] = (visitsByDay[v.scheduled_date] || 0) + 1;
     });
 
     // By branch
     const visitsByBranch: Record<string, number> = {};
-    scheduledVisits?.forEach(v => {
-      visitsByBranch[v.branch_id || "unknown"] = (visitsByBranch[v.branch_id || "unknown"] || 0) + 1;
+    scheduledVisits?.forEach((v) => {
+      visitsByBranch[v.branch_id || "unknown"] =
+        (visitsByBranch[v.branch_id || "unknown"] || 0) + 1;
     });
 
     // By employee
     const visitsByEmployee: Record<string, number> = {};
-    scheduledVisits?.forEach(v => {
-      visitsByEmployee[v.employee_id || "unknown"] = (visitsByEmployee[v.employee_id || "unknown"] || 0) + 1;
+    scheduledVisits?.forEach((v) => {
+      visitsByEmployee[v.employee_id || "unknown"] =
+        (visitsByEmployee[v.employee_id || "unknown"] || 0) + 1;
     });
 
     // Log the report
-    await supabase
-      .from("report_audit_logs")
-      .insert({
-        organization_id: organizationId,
-        user_id: user.id,
-        report_type: "operational",
-        action: "generated",
-        filters,
-        row_count: totalScheduled,
-      });
+    await supabase.from("report_audit_logs").insert({
+      organization_id: organizationId,
+      user_id: user.id,
+      report_type: "operational",
+      action: "generated",
+      filters,
+      row_count: totalScheduled,
+    });
 
     return NextResponse.json({
       data: {
@@ -168,9 +191,6 @@ export async function GET(request: NextRequest) {
     });
   } catch (error) {
     console.error("Error fetching operational report:", error);
-    return NextResponse.json(
-      { error: "Internal server error" },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }

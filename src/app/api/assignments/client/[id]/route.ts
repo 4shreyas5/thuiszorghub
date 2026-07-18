@@ -7,11 +7,14 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
     const supabase = await createServerClient();
     const { id } = await params;
 
+    // Same fix as GET /api/assignments: employee_client_assignments has no
+    // branch_id/FK, so branch is reached through the client and hoisted to
+    // the top level below.
     const { data: assignments, error } = await (supabase.from("employee_client_assignments") as any)
       .select(
         `*,
-        employee:employees(id, first_name, last_name, role_id, is_active),
-        branch:branches(id, name)`
+        employee:employees(id, first_name, last_name, is_active),
+        client:clients(branch:branches(id, name))`
       )
       .eq("client_id", id)
       .eq("is_deleted", false)
@@ -20,7 +23,13 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
 
     if (error) throw error;
 
-    return NextResponse.json(assignments || []);
+    const assignmentsWithBranch = (assignments || []).map((a: any) => ({
+      ...a,
+      client: undefined,
+      branch: a.client?.branch || null,
+    }));
+
+    return NextResponse.json(assignmentsWithBranch);
   } catch (error) {
     console.error("Error fetching client assignments:", error);
     return NextResponse.json({ error: "Failed to fetch assignments" }, { status: 500 });

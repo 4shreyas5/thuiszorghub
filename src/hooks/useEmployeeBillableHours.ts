@@ -1,4 +1,10 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from "react";
+
+interface TimesheetData {
+  billable_hours: number;
+  hourly_rate: number;
+  is_billed: boolean;
+}
 
 interface TimesheetSummary {
   employeeId: string;
@@ -13,6 +19,7 @@ export function useEmployeeBillableHours(employeeId: string, startDate?: string,
   const [summary, setSummary] = useState<TimesheetSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const isInitialMount = useRef(true);
 
   const fetchTimesheets = useCallback(async () => {
     try {
@@ -21,28 +28,28 @@ export function useEmployeeBillableHours(employeeId: string, startDate?: string,
 
       const query = new URLSearchParams({
         employeeId,
-        limit: '1000',
-        offset: '0',
+        limit: "1000",
+        offset: "0",
       });
 
-      if (startDate) query.append('startDate', startDate);
-      if (endDate) query.append('endDate', endDate);
+      if (startDate) query.append("startDate", startDate);
+      if (endDate) query.append("endDate", endDate);
 
       const response = await globalThis.fetch(`/api/billing/timesheets?${query}`);
 
       if (!response.ok) {
-        throw new Error('Failed to fetch timesheets');
+        throw new Error("Failed to fetch timesheets");
       }
 
       const data = await response.json();
-      const timesheets = data.data || [];
+      const timesheets: TimesheetData[] = data.data || [];
 
       let totalBillableHours = 0;
       let unbilledHours = 0;
       let totalRevenue = 0;
       let unbilledRevenue = 0;
 
-      timesheets.forEach((ts: any) => {
+      timesheets.forEach((ts: TimesheetData) => {
         const revenue = ts.billable_hours * ts.hourly_rate;
         totalBillableHours += ts.billable_hours;
         totalRevenue += revenue;
@@ -62,7 +69,7 @@ export function useEmployeeBillableHours(employeeId: string, startDate?: string,
         timesheetCount: timesheets.length,
       });
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Unknown error');
+      setError(err instanceof Error ? err.message : "Unknown error");
       setSummary(null);
     } finally {
       setLoading(false);
@@ -70,7 +77,10 @@ export function useEmployeeBillableHours(employeeId: string, startDate?: string,
   }, [employeeId, startDate, endDate]);
 
   useEffect(() => {
-    fetchTimesheets();
+    if (isInitialMount.current) {
+      isInitialMount.current = false;
+      fetchTimesheets();
+    }
   }, [fetchTimesheets]);
 
   return { summary, loading, error, refetch: fetchTimesheets };

@@ -37,19 +37,19 @@ export function AuthProvider({ children }: AuthProviderProps): React.JSX.Element
       if (currentSession) {
         setSession(currentSession);
 
-        // Fetch full user profile from database via API
+        // Fetch full user profile from database via API.
+        // A 404 here means the user has no `users` row yet, which is
+        // expected pre-onboarding (organization_id is NOT NULL, so the
+        // row can't exist until /api/organization creates it). In that
+        // case, use a local placeholder profile instead of persisting
+        // anything - onboarding is what creates the real row.
         try {
-          const response = await fetch("/api/auth/profile", {
-            headers: {
-              "Authorization": `Bearer ${currentSession.session.accessToken}`,
-            },
-          });
+          const response = await fetch("/api/auth/profile");
 
           if (response.ok) {
             const userData = await response.json();
             setUser(userData);
           } else {
-            // Fallback to minimal profile if API fails
             const userProfile: UserProfile = {
               id: currentSession.user.id,
               userId: currentSession.user.id,
@@ -111,6 +111,49 @@ export function AuthProvider({ children }: AuthProviderProps): React.JSX.Element
     initialize();
   }, [initializeSession]);
 
+  // Set up real-time auth state listener from Supabase
+  useEffect(() => {
+    const { data: authListener } = AuthService.getAuthStateListener();
+
+    // Properly handle auth state changes (logout, session expiry, etc)
+    if (authListener?.subscription) {
+      // The subscription is already handling state updates in the listener callback
+      // When logout happens, the listener will fire with session=null
+      // which triggers SessionManager.clearSession()
+      // Then we need to update the context to reflect that
+    }
+
+    return () => {
+      authListener?.subscription?.unsubscribe();
+    };
+  }, [initializeSession]);
+
+  // Re-check session periodically or when storage changes
+  useEffect(() => {
+    const handleStorageChange = async () => {
+      await initializeSession();
+    };
+
+    // Listen for storage changes (logout from another tab)
+    window.addEventListener("storage", handleStorageChange);
+
+    return () => {
+      window.removeEventListener("storage", handleStorageChange);
+    };
+  }, [initializeSession]);
+
+  const refreshUser = useCallback(async () => {
+    try {
+      const response = await fetch("/api/auth/profile");
+      if (response.ok) {
+        const userData = await response.json();
+        setUser(userData);
+      }
+    } catch (err) {
+      console.error("Failed to refresh user profile:", err);
+    }
+  }, []);
+
   const value: IdentityContext = {
     user,
     session,
@@ -118,6 +161,7 @@ export function AuthProvider({ children }: AuthProviderProps): React.JSX.Element
     error,
     isLoading,
     isAuthenticated,
+    refreshUser,
   };
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

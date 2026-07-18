@@ -1,5 +1,7 @@
 import Link from "next/link";
 import { ChevronRight } from "lucide-react";
+import { cn } from "@/shared/utils/cn";
+import { ICON_SIZE, ICON_STROKE_WIDTH } from "@/shared/constants/icons";
 
 interface BreadcrumbItem {
   label: string;
@@ -13,21 +15,29 @@ interface BreadcrumbProps {
 export function Breadcrumb({ items }: BreadcrumbProps) {
   return (
     <nav
-      className="flex items-center space-x-1 text-sm text-gray-600 dark:text-gray-400"
+      className="flex items-center space-x-1 text-sm text-muted-foreground"
       aria-label="Breadcrumb"
     >
       {items.map((item, index) => (
         <div key={index} className="flex items-center">
-          {index > 0 && <ChevronRight className="w-4 h-4 mx-1 text-gray-400 dark:text-gray-600" />}
+          {index > 0 && (
+            <ChevronRight
+              className={cn(ICON_SIZE.sm, "mx-1 text-muted-foreground/60")}
+              strokeWidth={ICON_STROKE_WIDTH}
+              aria-hidden="true"
+            />
+          )}
           {item.href ? (
             <Link
               href={item.href}
-              className="hover:text-gray-900 dark:hover:text-white transition-colors focus:outline-none focus:ring-2 focus:ring-offset-2 rounded px-1"
+              className="hover:text-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded px-1"
             >
               {item.label}
             </Link>
           ) : (
-            <span className="text-gray-900 dark:text-white font-medium">{item.label}</span>
+            <span className="text-foreground font-medium" aria-current="page">
+              {item.label}
+            </span>
           )}
         </div>
       ))}

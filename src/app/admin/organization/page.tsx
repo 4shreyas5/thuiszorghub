@@ -1,9 +1,18 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
+import Link from "next/link";
+import { AlertTriangle, Building2 } from "lucide-react";
 import { PageHeader } from "@/components/admin/PageHeader";
 import { useAuth } from "@/core/context/auth-context";
+import { Card } from "@/components/ui/Card";
+import { FormSection } from "@/components/ui/FormSection";
 import { Skeleton } from "@/components/ui/Skeleton";
+import { Input } from "@/components/ui/Input";
+import { Button } from "@/components/ui/Button";
+import { EmptyState } from "@/components/ui/EmptyState";
+import { useToast } from "@/components/ui/Toast";
+import { ICON_SIZE, ICON_STROKE_WIDTH } from "@/shared/constants/icons";
 
 interface Organization {
   id: string;
@@ -25,39 +34,84 @@ interface Organization {
 }
 
 export default function OrganizationPage() {
-  const { user: authUser } = useAuth();
+  const { user: authUser, status } = useAuth();
+  const { addToast } = useToast();
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [formData, setFormData] = useState<Partial<Organization>>({});
 
-  useEffect(() => {
-    if (authUser) {
-      fetchOrganization();
-    }
-  }, [authUser]);
-
-  const fetchOrganization = async () => {
+  const fetchOrganization = useCallback(async () => {
     try {
       setLoading(true);
+      setError(null);
       const response = await fetch("/api/organization");
-      const result = await response.json();
 
-      if (response.ok) {
+      if (!response.ok) {
+        let errorMsg = "Failed to fetch organization";
+        try {
+          const result = await response.json();
+          errorMsg = result.error || errorMsg;
+        } catch {
+          // If response isn't JSON, use default message
+        }
+        setError(`Error ${response.status}: ${errorMsg}`);
+        return;
+      }
+
+      const result = await response.json();
+      if (result.data) {
         setFormData(result.data);
+      } else {
+        setError("No organization data returned");
       }
     } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : "Failed to fetch organization";
+      setError(errorMsg);
       console.error("Error fetching organization:", error);
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
-  const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {
+  useEffect(() => {
+    // Deferred to a microtask so these setState calls aren't synchronous within the effect body.
+    queueMicrotask(() => {
+      if (status === "loading") {
+        setLoading(true);
+        return;
+      }
+
+      if (status === "error") {
+        setError("Authentication error occurred");
+        setLoading(false);
+        return;
+      }
+
+      if (status === "unauthenticated") {
+        setError("You are not authenticated");
+        setLoading(false);
+        return;
+      }
+
+      if (!authUser) {
+        setError("User profile not loaded");
+        setLoading(false);
+        return;
+      }
+
+      if (!authUser.organizationId) {
+        setLoading(false);
+        return;
+      }
+
+      fetchOrganization();
+    });
+  }, [status, authUser, fetchOrganization]);
+
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const { name, value } = e.target;
-    setFormData((prev) => ({
-      ...prev,
-      [name]: value,
-    }));
+    setFormData((prev) => ({ ...prev, [name]: value }));
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -80,246 +134,210 @@ export default function OrganizationPage() {
           city: formData.city,
           postalCode: formData.postal_code,
           country: formData.country,
-          primaryLanguage: formData.primary_language,
-          timezone: formData.timezone,
-          currency: formData.currency,
         }),
       });
 
       if (response.ok) {
         const result = await response.json();
         setFormData(result.data);
-        alert("Organization settings updated successfully");
+        addToast({
+          type: "success",
+          message: "Organization updated",
+          description: "Your changes have been saved.",
+        });
       } else {
-        alert("Failed to update organization settings");
+        addToast({
+          type: "error",
+          message: "Update failed",
+          description: "Could not save organization settings.",
+        });
       }
     } catch (error) {
       console.error("Error saving organization:", error);
-      alert("Error saving organization settings");
+      addToast({
+        type: "error",
+        message: "Update failed",
+        description: "An unexpected error occurred while saving.",
+      });
     } finally {
       setSaving(false);
     }
   };
 
-  if (!authUser) {
-    return <div className="p-4">Loading...</div>;
-  }
-
   if (loading) {
     return (
       <div className="space-y-6">
-        <PageHeader title="Organization" description="Manage organization settings" />
+        <PageHeader
+          title="Organization"
+          description="Manage your organization's profile and registration details."
+        />
         <div className="space-y-4">
-          <Skeleton className="h-12 w-full" />
-          <Skeleton className="h-12 w-full" />
-          <Skeleton className="h-12 w-full" />
+          <Skeleton className="h-40 w-full" />
+          <Skeleton className="h-40 w-full" />
         </div>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="space-y-6">
+        <PageHeader
+          title="Organization"
+          description="Manage your organization's profile and registration details."
+        />
+        <Card bordered padding="md">
+          <EmptyState
+            tone="error"
+            icon={AlertTriangle}
+            title="Couldn't load organization"
+            description={error}
+            action={
+              <Button variant="outline" onClick={fetchOrganization}>
+                Retry
+              </Button>
+            }
+          />
+        </Card>
+      </div>
+    );
+  }
+
+  if (!authUser?.organizationId) {
+    return (
+      <div className="space-y-6">
+        <PageHeader
+          title="Organization"
+          description="Create and manage your organization's settings."
+        />
+        <Card bordered padding="lg" className="border-warning/40 bg-warning/5 text-center">
+          <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-warning/15 text-warning-foreground">
+            <Building2 className={ICON_SIZE.lg} strokeWidth={ICON_STROKE_WIDTH} />
+          </div>
+          <h2 className="mt-4 text-lg font-semibold text-foreground">
+            Organization Setup Required
+          </h2>
+          <p className="mx-auto mt-2 max-w-md text-sm text-muted-foreground">
+            Complete the organization setup to manage your registration, contact and address
+            details.
+          </p>
+          <div className="mt-6 flex justify-center">
+            <Button asChild>
+              <Link href="/onboarding">Complete Setup</Link>
+            </Button>
+          </div>
+        </Card>
       </div>
     );
   }
 
   return (
     <div className="space-y-6">
-      <PageHeader title="Organization" description="Manage organization settings" />
+      <PageHeader
+        title="Organization"
+        description="Manage your organization's profile and registration details."
+      />
 
-      <form onSubmit={handleSubmit} className="bg-white dark:bg-gray-800 rounded-lg p-6 space-y-6">
-        <div className="grid grid-cols-2 gap-6">
-          <div>
-            <label className="block text-sm font-medium text-gray-900 dark:text-gray-100 mb-2">
-              Organization Name
-            </label>
-            <input
-              type="text"
-              name="name"
-              value={formData.name || ""}
-              onChange={handleChange}
-              className="w-full px-4 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
-            />
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-900 dark:text-gray-100 mb-2">
-              Legal Name
-            </label>
-            <input
-              type="text"
-              name="legal_name"
-              value={formData.legal_name || ""}
-              onChange={handleChange}
-              className="w-full px-4 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
-            />
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-900 dark:text-gray-100 mb-2">
-              KVK Number
-            </label>
-            <input
-              type="text"
-              name="kvk_number"
-              value={formData.kvk_number || ""}
-              onChange={handleChange}
-              className="w-full px-4 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
-            />
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-900 dark:text-gray-100 mb-2">
-              VAT Number
-            </label>
-            <input
-              type="text"
-              name="vat_number"
-              value={formData.vat_number || ""}
-              onChange={handleChange}
-              className="w-full px-4 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
-            />
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-900 dark:text-gray-100 mb-2">
-              Email
-            </label>
-            <input
-              type="email"
-              name="email"
-              value={formData.email || ""}
-              onChange={handleChange}
-              className="w-full px-4 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
-            />
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-900 dark:text-gray-100 mb-2">
-              Phone
-            </label>
-            <input
-              type="tel"
-              name="phone"
-              value={formData.phone || ""}
-              onChange={handleChange}
-              className="w-full px-4 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
-            />
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-900 dark:text-gray-100 mb-2">
-              Website
-            </label>
-            <input
-              type="url"
-              name="website"
-              value={formData.website || ""}
-              onChange={handleChange}
-              className="w-full px-4 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
-            />
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-900 dark:text-gray-100 mb-2">
-              Address Line 1
-            </label>
-            <input
-              type="text"
-              name="address_line_1"
-              value={formData.address_line_1 || ""}
-              onChange={handleChange}
-              className="w-full px-4 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
-            />
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-900 dark:text-gray-100 mb-2">
-              City
-            </label>
-            <input
-              type="text"
-              name="city"
-              value={formData.city || ""}
-              onChange={handleChange}
-              className="w-full px-4 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
-            />
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-900 dark:text-gray-100 mb-2">
-              Postal Code
-            </label>
-            <input
-              type="text"
-              name="postal_code"
-              value={formData.postal_code || ""}
-              onChange={handleChange}
-              className="w-full px-4 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
-            />
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-900 dark:text-gray-100 mb-2">
-              Country
-            </label>
-            <input
-              type="text"
-              name="country"
-              value={formData.country || ""}
-              onChange={handleChange}
-              className="w-full px-4 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
-            />
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-900 dark:text-gray-100 mb-2">
-              Primary Language
-            </label>
-            <select
-              name="primary_language"
-              value={formData.primary_language || ""}
-              onChange={handleChange}
-              className="w-full px-4 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
-            >
-              <option value="nl">Dutch (NL)</option>
-              <option value="en">English (EN)</option>
-            </select>
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-900 dark:text-gray-100 mb-2">
-              Timezone
-            </label>
-            <select
-              name="timezone"
-              value={formData.timezone || ""}
-              onChange={handleChange}
-              className="w-full px-4 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
-            >
-              <option value="Europe/Amsterdam">Europe/Amsterdam</option>
-              <option value="UTC">UTC</option>
-            </select>
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-900 dark:text-gray-100 mb-2">
-              Currency
-            </label>
-            <select
-              name="currency"
-              value={formData.currency || ""}
-              onChange={handleChange}
-              className="w-full px-4 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
-            >
-              <option value="EUR">EUR</option>
-              <option value="USD">USD</option>
-            </select>
-          </div>
-        </div>
-
-        <button
-          type="submit"
-          disabled={saving}
-          className="px-6 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm font-medium rounded-lg"
+      <form onSubmit={handleSubmit} className="space-y-8">
+        <FormSection
+          title="Organization Details"
+          description="The primary identity of your organization."
         >
-          {saving ? "Saving..." : "Save Changes"}
-        </button>
+          <Input
+            label="Organization Name"
+            name="name"
+            value={formData.name || ""}
+            onChange={handleChange}
+          />
+          <Input
+            label="Legal Name"
+            name="legal_name"
+            value={formData.legal_name || ""}
+            onChange={handleChange}
+          />
+        </FormSection>
+
+        <FormSection
+          title="Registration"
+          description="Dutch Chamber of Commerce and tax identifiers."
+        >
+          <Input
+            label="KVK Number"
+            name="kvk_number"
+            value={formData.kvk_number || ""}
+            onChange={handleChange}
+          />
+          <Input
+            label="VAT Number"
+            name="vat_number"
+            value={formData.vat_number || ""}
+            onChange={handleChange}
+          />
+        </FormSection>
+
+        <FormSection
+          title="Contact"
+          description="How clients and partners reach your organization."
+        >
+          <Input
+            label="Email"
+            type="email"
+            name="email"
+            value={formData.email || ""}
+            onChange={handleChange}
+          />
+          <Input
+            label="Phone"
+            type="tel"
+            name="phone"
+            value={formData.phone || ""}
+            onChange={handleChange}
+          />
+          <Input
+            label="Website"
+            type="url"
+            name="website"
+            value={formData.website || ""}
+            onChange={handleChange}
+            className="md:col-span-2"
+          />
+        </FormSection>
+
+        <FormSection title="Address" description="Primary registered address.">
+          <Input
+            label="Address Line 1"
+            name="address_line_1"
+            value={formData.address_line_1 || ""}
+            onChange={handleChange}
+            className="md:col-span-2"
+          />
+          <Input label="City" name="city" value={formData.city || ""} onChange={handleChange} />
+          <Input
+            label="Postal Code"
+            name="postal_code"
+            value={formData.postal_code || ""}
+            onChange={handleChange}
+          />
+          <Input
+            label="Country"
+            name="country"
+            value={formData.country || ""}
+            onChange={handleChange}
+          />
+        </FormSection>
+
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+          <p className="text-xs text-muted-foreground">
+            Looking for timezone, language, currency, or notification preferences? Those live in{" "}
+            <Link href="/admin/settings" className="font-medium text-primary hover:underline">
+              Settings
+            </Link>
+            .
+          </p>
+          <Button type="submit" loading={saving} className="sm:w-auto">
+            Save Changes
+          </Button>
+        </div>
       </form>
     </div>
   );

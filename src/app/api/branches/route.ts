@@ -4,19 +4,22 @@ import { NextRequest, NextResponse } from "next/server";
 export async function GET(request: NextRequest) {
   try {
     const supabase = await createServerClient();
-    const { data: { user } } = await supabase.auth.getUser();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
 
     if (!user) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const { data: userData } = await supabase
+    const { data: userData, error: userError } = await supabase
       .from("users")
       .select("organization_id")
       .eq("id", user.id)
       .single();
 
-    if (!userData) {
+    if (userError || !userData) {
+      console.error("[branches GET] Error fetching user:", userError);
       return NextResponse.json({ error: "User not found" }, { status: 404 });
     }
 
@@ -25,9 +28,13 @@ export async function GET(request: NextRequest) {
     const limit = parseInt(searchParams.get("limit") || "50");
     const offset = (page - 1) * limit;
 
-    const { data: branches, error, count } = await supabase
+    const {
+      data: branches,
+      error,
+      count,
+    } = await supabase
       .from("branches")
-      .select("*", { count: "exact" })
+      .select("*, manager:manager_user_id(id, first_name, last_name, email)", { count: "exact" })
       .eq("organization_id", userData.organization_id)
       .eq("is_deleted", false)
       .range(offset, offset + limit - 1)
@@ -46,34 +53,45 @@ export async function GET(request: NextRequest) {
     });
   } catch (error) {
     console.error("Error fetching branches:", error);
-    return NextResponse.json(
-      { error: "Internal server error" },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }
 
 export async function POST(request: NextRequest) {
   try {
     const supabase = await createServerClient();
-    const { data: { user } } = await supabase.auth.getUser();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
 
     if (!user) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const { data: userData } = await supabase
+    const { data: userData, error: userError } = await supabase
       .from("users")
       .select("organization_id")
       .eq("id", user.id)
       .single();
 
-    if (!userData) {
+    if (userError || !userData) {
+      console.error("[branches POST] Error fetching user:", userError);
       return NextResponse.json({ error: "User not found" }, { status: 404 });
     }
 
     const body = await request.json();
-    const { name, code, email, phone, addressLine1, addressLine2, city, postalCode, country } = body;
+    const {
+      name,
+      code,
+      email,
+      phone,
+      addressLine1,
+      addressLine2,
+      city,
+      postalCode,
+      country,
+      managerUserId,
+    } = body;
 
     if (!name) {
       return NextResponse.json({ error: "Branch name is required" }, { status: 400 });
@@ -84,14 +102,15 @@ export async function POST(request: NextRequest) {
       .insert({
         organization_id: userData.organization_id,
         name,
-        code,
-        email,
-        phone,
-        address_line_1: addressLine1,
-        address_line_2: addressLine2,
-        city,
-        postal_code: postalCode,
-        country,
+        code: code || null,
+        email: email || null,
+        phone: phone || null,
+        manager_user_id: managerUserId || null,
+        address_line_1: addressLine1 || "TBD",
+        address_line_2: addressLine2 || null,
+        city: city || "TBD",
+        postal_code: postalCode || "TBD",
+        country: country || "NL",
       })
       .select()
       .single();
@@ -101,9 +120,6 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ data: branch }, { status: 201 });
   } catch (error) {
     console.error("Error creating branch:", error);
-    return NextResponse.json(
-      { error: "Internal server error" },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }

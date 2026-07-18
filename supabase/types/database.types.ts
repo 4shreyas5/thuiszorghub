@@ -83,6 +83,7 @@ export interface Database {
           updated_at?: string;
           deleted_at?: string | null;
         };
+        Relationships: [];
       };
       branches: {
         Row: {
@@ -142,6 +143,7 @@ export interface Database {
           updated_at?: string;
           deleted_at?: string | null;
         };
+        Relationships: [];
       };
       users: {
         Row: {
@@ -201,6 +203,7 @@ export interface Database {
           updated_at?: string;
           deleted_at?: string | null;
         };
+        Relationships: [];
       };
       roles: {
         Row: {
@@ -230,6 +233,7 @@ export interface Database {
           created_at?: string;
           updated_at?: string;
         };
+        Relationships: [];
       };
       permissions: {
         Row: {
@@ -256,6 +260,7 @@ export interface Database {
           description?: string | null;
           created_at?: string;
         };
+        Relationships: [];
       };
       role_permissions: {
         Row: {
@@ -276,6 +281,7 @@ export interface Database {
           permission_id?: string;
           created_at?: string;
         };
+        Relationships: [];
       };
       user_roles: {
         Row: {
@@ -299,6 +305,7 @@ export interface Database {
           assigned_by?: string;
           assigned_at?: string;
         };
+        Relationships: [];
       };
       organization_settings: {
         Row: {
@@ -340,6 +347,7 @@ export interface Database {
           created_at?: string;
           updated_at?: string;
         };
+        Relationships: [];
       };
       audit_logs: {
         Row: {
@@ -387,6 +395,7 @@ export interface Database {
           error_message?: string | null;
           created_at?: string;
         };
+        Relationships: [];
       };
     };
     // eslint-disable-next-line @typescript-eslint/no-empty-object-type

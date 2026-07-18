@@ -40,7 +40,7 @@ export default function NewCarePlanPage() {
       <PageHeader title="New Care Plan" description="Create a new care plan for a client" />
 
       {error && (
-        <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-4 text-red-700 dark:text-red-400">
+        <div className="rounded-md border border-danger/30 bg-danger/10 p-4 text-sm text-danger">
           {error}
         </div>
       )}

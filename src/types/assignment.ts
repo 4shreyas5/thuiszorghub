@@ -15,7 +15,6 @@ export interface Assignment {
     id: string;
     first_name: string;
     last_name: string;
-    role_id: string;
     is_active: boolean;
   };
   client?: {
@@ -46,6 +45,7 @@ export interface UpdateAssignmentPayload {
   assigned_until?: string | null;
   is_primary?: boolean;
   notes?: string;
+  is_deleted?: boolean;
 }
 
 export interface AssignmentWithRelations extends Assignment {
@@ -53,7 +53,6 @@ export interface AssignmentWithRelations extends Assignment {
     id: string;
     first_name: string;
     last_name: string;
-    role_id: string;
     is_active: boolean;
   };
   client: {

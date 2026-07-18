@@ -2,10 +2,7 @@ import { createServerClient } from "@/core/database/server";
 import { NextRequest, NextResponse } from "next/server";
 import { UpdateInvoiceStatusSchema } from "@/core/validation/billing-schemas";
 
-export async function GET(
-  _request: NextRequest,
-  { params }: { params: Promise<{ id: string }> }
-) {
+export async function GET(_request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
     const { id } = await params;
     const supabase = await createServerClient();
@@ -30,17 +27,18 @@ export async function GET(
 
     const { data: invoice } = await supabase
       .from("invoices")
-      .select(`
+      .select(
+        `
         *,
         items:invoice_items(*),
         payments:payments(*),
-        client:clients(id, name, email, phone),
+        client:clients(id, first_name, last_name, email, phone),
         branch:branches(id, name),
         statusHistory:invoice_status_history(*)
-      `)
+      `
+      )
       .eq("id", id)
       .eq("organization_id", userData.organization_id)
-      .eq("is_deleted", false)
       .single();
 
     if (!invoice) {
@@ -50,17 +48,11 @@ export async function GET(
     return NextResponse.json(invoice);
   } catch (error) {
     console.error("Error fetching invoice:", error);
-    return NextResponse.json(
-      { error: "Failed to fetch invoice" },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "Failed to fetch invoice" }, { status: 500 });
   }
 }
 
-export async function PATCH(
-  request: NextRequest,
-  { params }: { params: Promise<{ id: string }> }
-) {
+export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
     const { id } = await params;
     const supabase = await createServerClient();
@@ -110,6 +102,7 @@ export async function PATCH(
         paid_at: validatedData.status === "paid" ? new Date() : currentInvoice.paid_at,
       })
       .eq("id", id)
+      .eq("organization_id", userData.organization_id)
       .select()
       .single();
 
@@ -130,9 +123,10 @@ export async function PATCH(
     await supabase.from("audit_logs").insert({
       organization_id: userData.organization_id,
       user_id: user.id,
+      event_type: "UPDATE",
       resource_type: "invoices",
       resource_id: id,
-      action: "update",
+      action: "updated",
       changes: {
         status: {
           old: currentInvoice.status,
@@ -144,10 +138,7 @@ export async function PATCH(
     return NextResponse.json(updatedInvoice);
   } catch (error) {
     console.error("Error updating invoice:", error);
-    return NextResponse.json(
-      { error: "Failed to update invoice" },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "Failed to update invoice" }, { status: 500 });
   }
 }
 
@@ -198,18 +189,16 @@ export async function DELETE(
     await supabase.from("audit_logs").insert({
       organization_id: userData.organization_id,
       user_id: user.id,
+      event_type: "DELETE",
       resource_type: "invoices",
       resource_id: id,
-      action: "delete",
-      changes: data,
+      action: "deleted",
+      changes: { old_values: data },
     });
 
     return NextResponse.json({ message: "Invoice deleted" });
   } catch (error) {
     console.error("Error deleting invoice:", error);
-    return NextResponse.json(
-      { error: "Failed to delete invoice" },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "Failed to delete invoice" }, { status: 500 });
   }
 }

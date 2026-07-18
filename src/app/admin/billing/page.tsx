@@ -1,8 +1,26 @@
-'use client';
+"use client";
 
-import { useEffect, useState, useCallback } from 'react';
-import { PageHeader } from '@/components/admin/PageHeader';
-import { useSession } from '@/hooks/useSession';
+import { useEffect, useState, useCallback } from "react";
+import Link from "next/link";
+import {
+  Euro,
+  TrendingUp,
+  Clock3,
+  AlertTriangle,
+  CheckCircle2,
+  Timer,
+  FileText,
+  Wallet,
+  Sparkles,
+  RefreshCw,
+} from "lucide-react";
+import { PageHeader } from "@/components/admin/PageHeader";
+import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/Card";
+import { Button } from "@/components/ui/Button";
+import { Skeleton } from "@/components/ui/Skeleton";
+import { StatusBadge } from "@/components/ui/Badge";
+import { useToast } from "@/components/ui/Toast";
+import { ICON_SIZE, ICON_STROKE_WIDTH } from "@/shared/constants/icons";
 
 interface FinancialMetrics {
   revenueToday: number;
@@ -13,240 +31,298 @@ interface FinancialMetrics {
   billableHours: number;
 }
 
+interface StatusCounts {
+  draft: number;
+  pending: number;
+  paid: number;
+  overdue: number;
+}
+
+interface RecentInvoice {
+  id: string;
+  invoice_number: string;
+  total_amount: number;
+  status: string;
+  client?: { first_name: string; last_name: string } | null;
+}
+
+const EMPTY_METRICS: FinancialMetrics = {
+  revenueToday: 0,
+  revenueThisMonth: 0,
+  outstandingAmount: 0,
+  overdueAmount: 0,
+  paidAmount: 0,
+  billableHours: 0,
+};
+
 export default function BillingPage() {
-  const { isAuthenticated, isLoading } = useSession();
-  const [metrics, setMetrics] = useState<FinancialMetrics>({
-    revenueToday: 0,
-    revenueThisMonth: 0,
-    outstandingAmount: 0,
-    overdueAmount: 0,
-    paidAmount: 0,
-    billableHours: 0,
+  const { addToast } = useToast();
+  const [metrics, setMetrics] = useState<FinancialMetrics>(EMPTY_METRICS);
+  const [statusCounts, setStatusCounts] = useState<StatusCounts>({
+    draft: 0,
+    pending: 0,
+    paid: 0,
+    overdue: 0,
   });
+  const [recentInvoices, setRecentInvoices] = useState<RecentInvoice[]>([]);
   const [loading, setLoading] = useState(true);
+  const [generatingInvoices, setGeneratingInvoices] = useState(false);
+  const [generatingTimesheets, setGeneratingTimesheets] = useState(false);
 
-  const handleGenerateInvoices = async () => {
+  const fetchAll = useCallback(async () => {
     try {
-      const response = await fetch('/api/billing/invoices/auto-generate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({}),
-      });
+      setLoading(true);
+      const [summaryRes, draftRes, pendingRes, paidRes, overdueRes, recentRes] = await Promise.all([
+        fetch("/api/billing/summary?period=month"),
+        fetch("/api/billing/invoices?status=draft&limit=1"),
+        fetch("/api/billing/invoices?status=pending&limit=1"),
+        fetch("/api/billing/invoices?status=paid&limit=1"),
+        fetch("/api/billing/invoices?status=overdue&limit=1"),
+        fetch("/api/billing/invoices?limit=5"),
+      ]);
 
-      if (!response.ok) throw new Error('Failed to generate invoices');
-      await fetchMetrics();
-      alert('Invoices generated successfully!');
+      if (summaryRes.ok) {
+        const data = await summaryRes.json();
+        setMetrics({
+          revenueToday: data.summary.revenue_today,
+          revenueThisMonth: data.summary.revenue_this_month,
+          outstandingAmount: data.summary.outstanding_amount,
+          overdueAmount: data.summary.overdue_amount,
+          paidAmount: data.summary.paid_amount,
+          billableHours: data.summary.billable_hours_month,
+        });
+      } else {
+        setMetrics(EMPTY_METRICS);
+      }
+
+      const counts = { draft: 0, pending: 0, paid: 0, overdue: 0 };
+      for (const [key, res] of [
+        ["draft", draftRes],
+        ["pending", pendingRes],
+        ["paid", paidRes],
+        ["overdue", overdueRes],
+      ] as const) {
+        if (res.ok) {
+          const data = await res.json();
+          counts[key] = data.pagination?.total || 0;
+        }
+      }
+      setStatusCounts(counts);
+
+      if (recentRes.ok) {
+        const data = await recentRes.json();
+        setRecentInvoices(data.data || []);
+      }
     } catch (error) {
-      console.error('Error generating invoices:', error);
-      alert('Failed to generate invoices');
-    }
-  };
-
-  const handleGenerateTimesheets = async () => {
-    try {
-      const response = await fetch('/api/billing/timesheets/from-visits', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({}),
-      });
-
-      if (!response.ok) throw new Error('Failed to generate timesheets');
-      alert('Timesheets generated successfully!');
-    } catch (error) {
-      console.error('Error generating timesheets:', error);
-      alert('Failed to generate timesheets');
-    }
-  };
-
-  const fetchMetrics = useCallback(async () => {
-    try {
-      const response = await fetch('/api/billing/summary?period=month');
-      if (!response.ok) throw new Error('Failed to fetch billing summary');
-      const data = await response.json();
-      setMetrics({
-        revenueToday: data.summary.revenue_today,
-        revenueThisMonth: data.summary.revenue_this_month,
-        outstandingAmount: data.summary.outstanding_amount,
-        overdueAmount: data.summary.overdue_amount,
-        paidAmount: data.summary.paid_amount,
-        billableHours: data.summary.billable_hours_month,
-      });
-    } catch (error) {
-      console.error('Error fetching metrics:', error);
-      setMetrics({
-        revenueToday: 0,
-        revenueThisMonth: 0,
-        outstandingAmount: 0,
-        overdueAmount: 0,
-        paidAmount: 0,
-        billableHours: 0,
-      });
+      console.error("Error fetching billing overview:", error);
     } finally {
       setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    if (!isLoading && isAuthenticated) {
-      fetchMetrics();
-    }
-  }, [isAuthenticated, isLoading, fetchMetrics]);
+    // Deferred to a microtask so the fetch trigger isn't a synchronous setState call in the effect body.
+    queueMicrotask(() => {
+      fetchAll();
+    });
+  }, [fetchAll]);
 
-  if (isLoading || loading) {
-    return <div className="animate-pulse">Loading...</div>;
+  const handleGenerateInvoices = async () => {
+    try {
+      setGeneratingInvoices(true);
+      const response = await fetch("/api/billing/invoices/auto-generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      if (!response.ok) throw new Error("Failed to generate invoices");
+      addToast({ type: "success", message: "Invoices generated from completed visits" });
+      await fetchAll();
+    } catch {
+      addToast({ type: "error", message: "Failed to generate invoices" });
+    } finally {
+      setGeneratingInvoices(false);
+    }
+  };
+
+  const handleGenerateTimesheets = async () => {
+    try {
+      setGeneratingTimesheets(true);
+      const response = await fetch("/api/billing/timesheets/from-visits", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      if (!response.ok) throw new Error("Failed to generate timesheets");
+      addToast({ type: "success", message: "Timesheets generated from completed visits" });
+    } catch {
+      addToast({ type: "error", message: "Failed to generate timesheets" });
+    } finally {
+      setGeneratingTimesheets(false);
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="space-y-6">
+        <PageHeader
+          title="Billing & Financial Management"
+          description="Manage invoices, payments, and financial reporting."
+        />
+        <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3">
+          {[...Array(6)].map((_, i) => (
+            <Skeleton key={i} className="h-28 w-full" />
+          ))}
+        </div>
+      </div>
+    );
   }
+
+  const metricCards = [
+    { title: "Revenue Today", value: metrics.revenueToday, icon: Euro },
+    { title: "Revenue This Month", value: metrics.revenueThisMonth, icon: TrendingUp },
+    { title: "Outstanding Amount", value: metrics.outstandingAmount, icon: Clock3 },
+    { title: "Overdue Amount", value: metrics.overdueAmount, icon: AlertTriangle },
+    { title: "Paid Amount", value: metrics.paidAmount, icon: CheckCircle2 },
+  ];
 
   return (
     <div className="space-y-6">
       <PageHeader
         title="Billing & Financial Management"
-        description="Manage invoices, payments, and financial reporting"
+        description="Manage invoices, payments, and financial reporting."
       />
 
-      {/* Financial Metrics Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        <MetricCard
-          title="Revenue Today"
-          value={`€${metrics.revenueToday.toLocaleString('nl-NL', { minimumFractionDigits: 2 })}`}
-          icon="💰"
-          color="bg-green-50"
-        />
-        <MetricCard
-          title="Revenue This Month"
-          value={`€${metrics.revenueThisMonth.toLocaleString('nl-NL', { minimumFractionDigits: 2 })}`}
-          icon="📊"
-          color="bg-blue-50"
-        />
-        <MetricCard
-          title="Outstanding Amount"
-          value={`€${metrics.outstandingAmount.toLocaleString('nl-NL', { minimumFractionDigits: 2 })}`}
-          icon="⏳"
-          color="bg-yellow-50"
-        />
-        <MetricCard
-          title="Overdue Amount"
-          value={`€${metrics.overdueAmount.toLocaleString('nl-NL', { minimumFractionDigits: 2 })}`}
-          icon="⚠️"
-          color="bg-red-50"
-        />
-        <MetricCard
-          title="Paid Amount"
-          value={`€${metrics.paidAmount.toLocaleString('nl-NL', { minimumFractionDigits: 2 })}`}
-          icon="✓"
-          color="bg-emerald-50"
-        />
-        <MetricCard
-          title="Billable Hours"
-          value={`${metrics.billableHours.toLocaleString('nl-NL')}`}
-          icon="⏱️"
-          color="bg-purple-50"
-        />
-      </div>
-
-      {/* Quick Actions */}
-      <div className="bg-white rounded-lg shadow p-6 border border-gray-200">
-        <h3 className="text-lg font-semibold text-gray-900 mb-4">Quick Actions</h3>
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-          <a
-            href="/admin/billing/invoices"
-            className="inline-flex items-center justify-center px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition"
-          >
-            View Invoices
-          </a>
-          <a
-            href="/admin/billing/payments"
-            className="inline-flex items-center justify-center px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition"
-          >
-            Record Payment
-          </a>
-          <button
-            onClick={handleGenerateInvoices}
-            className="inline-flex items-center justify-center px-4 py-2 bg-orange-600 text-white rounded-lg hover:bg-orange-700 transition"
-          >
-            Auto-Generate Invoices
-          </button>
-          <button
-            onClick={handleGenerateTimesheets}
-            className="inline-flex items-center justify-center px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition"
-          >
-            Generate Timesheets
-          </button>
-        </div>
-      </div>
-
-      {/* Financial Overview */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <div className="bg-white rounded-lg shadow p-6 border border-gray-200">
-          <h3 className="text-lg font-semibold text-gray-900 mb-4">Invoice Status</h3>
-          <div className="space-y-3">
-            <StatusRow label="Draft Invoices" count={12} color="gray" />
-            <StatusRow label="Pending Invoices" count={8} color="yellow" />
-            <StatusRow label="Paid Invoices" count={156} color="green" />
-            <StatusRow label="Overdue Invoices" count={3} color="red" />
+      <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3">
+        {metricCards.map((card) => (
+          <Card key={card.title} bordered padding="md">
+            <div className="flex items-start justify-between">
+              <div>
+                <p className="text-sm font-medium text-muted-foreground">{card.title}</p>
+                <p className="mt-2 text-3xl font-bold text-foreground">
+                  €{card.value.toLocaleString("nl-NL", { minimumFractionDigits: 2 })}
+                </p>
+              </div>
+              <card.icon
+                className={ICON_SIZE.lg + " text-muted-foreground"}
+                strokeWidth={ICON_STROKE_WIDTH}
+              />
+            </div>
+          </Card>
+        ))}
+        <Card bordered padding="md">
+          <div className="flex items-start justify-between">
+            <div>
+              <p className="text-sm font-medium text-muted-foreground">Billable Hours (month)</p>
+              <p className="mt-2 text-3xl font-bold text-foreground">
+                {metrics.billableHours.toLocaleString("nl-NL")}
+              </p>
+            </div>
+            <Timer
+              className={ICON_SIZE.lg + " text-muted-foreground"}
+              strokeWidth={ICON_STROKE_WIDTH}
+            />
           </div>
-        </div>
+        </Card>
+      </div>
 
-        <div className="bg-white rounded-lg shadow p-6 border border-gray-200">
-          <h3 className="text-lg font-semibold text-gray-900 mb-4">Top Clients by Revenue</h3>
-          <div className="space-y-3">
-            <RevenueRow client="Amsterdam Care Center" amount={8500} />
-            <RevenueRow client="Rotterdam Homecare" amount={6200} />
-            <RevenueRow client="Utrecht Medical Services" amount={5100} />
-            <RevenueRow client="Den Haag Health" amount={4300} />
+      <Card>
+        <CardHeader>
+          <CardTitle>Quick Actions</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
+            <Button asChild variant="outline">
+              <Link href="/admin/billing/invoices">
+                <FileText className={ICON_SIZE.sm} strokeWidth={ICON_STROKE_WIDTH} />
+                View Invoices
+              </Link>
+            </Button>
+            <Button asChild variant="outline">
+              <Link href="/admin/billing/payments">
+                <Wallet className={ICON_SIZE.sm} strokeWidth={ICON_STROKE_WIDTH} />
+                View Payments
+              </Link>
+            </Button>
+            <Button onClick={handleGenerateInvoices} loading={generatingInvoices}>
+              <Sparkles className={ICON_SIZE.sm} strokeWidth={ICON_STROKE_WIDTH} />
+              Auto-Generate Invoices
+            </Button>
+            <Button
+              variant="secondary"
+              onClick={handleGenerateTimesheets}
+              loading={generatingTimesheets}
+            >
+              <RefreshCw className={ICON_SIZE.sm} strokeWidth={ICON_STROKE_WIDTH} />
+              Generate Timesheets
+            </Button>
           </div>
-        </div>
+        </CardContent>
+      </Card>
+
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+        <Card>
+          <CardHeader>
+            <CardTitle>Invoice Status</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="flex items-center justify-between">
+              <span className="text-foreground">Draft Invoices</span>
+              <StatusBadge status="draft" size="sm" label={String(statusCounts.draft)} />
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-foreground">Pending Invoices</span>
+              <StatusBadge status="pending" size="sm" label={String(statusCounts.pending)} />
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-foreground">Paid Invoices</span>
+              <StatusBadge status="paid" size="sm" label={String(statusCounts.paid)} />
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-foreground">Overdue Invoices</span>
+              <StatusBadge status="overdue" size="sm" label={String(statusCounts.overdue)} />
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>Recent Invoices</CardTitle>
+          </CardHeader>
+          <CardContent>
+            {recentInvoices.length === 0 ? (
+              <p className="text-sm text-muted-foreground">No invoices yet.</p>
+            ) : (
+              <div className="space-y-3">
+                {recentInvoices.map((invoice) => (
+                  <Link
+                    key={invoice.id}
+                    href={`/admin/billing/invoices/${invoice.id}`}
+                    className="flex items-center justify-between rounded-md px-2 py-1.5 -mx-2 transition-colors hover:bg-accent/40"
+                  >
+                    <div>
+                      <p className="text-sm font-medium text-foreground">
+                        {invoice.invoice_number}
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        {invoice.client
+                          ? `${invoice.client.first_name} ${invoice.client.last_name}`
+                          : "Unknown client"}
+                      </p>
+                    </div>
+                    <span className="text-sm font-semibold text-foreground">
+                      €
+                      {Number(invoice.total_amount || 0).toLocaleString("nl-NL", {
+                        minimumFractionDigits: 2,
+                      })}
+                    </span>
+                  </Link>
+                ))}
+              </div>
+            )}
+          </CardContent>
+        </Card>
       </div>
-    </div>
-  );
-}
-
-function MetricCard({
-  title,
-  value,
-  icon,
-  color,
-}: {
-  title: string;
-  value: string;
-  icon: string;
-  color: string;
-}) {
-  return (
-    <div className={`${color} rounded-lg p-6 border border-gray-200`}>
-      <div className="flex items-start justify-between">
-        <div>
-          <p className="text-sm font-medium text-gray-600">{title}</p>
-          <p className="text-3xl font-bold text-gray-900 mt-2">{value}</p>
-        </div>
-        <div className="text-4xl">{icon}</div>
-      </div>
-    </div>
-  );
-}
-
-function StatusRow({ label, count, color }: { label: string; count: number; color: string }) {
-  const colorClass = {
-    gray: 'bg-gray-100 text-gray-800',
-    yellow: 'bg-yellow-100 text-yellow-800',
-    green: 'bg-green-100 text-green-800',
-    red: 'bg-red-100 text-red-800',
-  }[color];
-
-  return (
-    <div className="flex items-center justify-between">
-      <span className="text-gray-700">{label}</span>
-      <span className={`px-3 py-1 rounded-full text-sm font-medium ${colorClass}`}>
-        {count}
-      </span>
-    </div>
-  );
-}
-
-function RevenueRow({ client, amount }: { client: string; amount: number }) {
-  return (
-    <div className="flex items-center justify-between">
-      <span className="text-gray-700">{client}</span>
-      <span className="text-gray-900 font-semibold">€{amount.toLocaleString('nl-NL', { minimumFractionDigits: 2 })}</span>
     </div>
   );
 }

@@ -5,6 +5,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { PageHeader } from "@/components/admin/PageHeader";
 import { AssignmentForm } from "@/components/admin/AssignmentForm";
+import { Card } from "@/components/ui/Card";
 
 export default function NewAssignmentPage() {
   const router = useRouter();
@@ -40,17 +41,17 @@ export default function NewAssignmentPage() {
 
   return (
     <div className="space-y-6">
-      <PageHeader title="Create Assignment" description="Assign an employee to a client" />
+      <PageHeader title="Create Assignment" description="Assign a caregiver to a client." />
 
       {error && (
-        <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-4 text-red-700 dark:text-red-400">
+        <div className="rounded-md border border-danger/30 bg-danger/10 p-4 text-sm text-danger">
           {error}
         </div>
       )}
 
-      <div className="bg-white dark:bg-gray-800 rounded-lg p-6">
+      <Card bordered padding="lg">
         <AssignmentForm onSubmit={handleSubmit} isLoading={isLoading} />
-      </div>
+      </Card>
     </div>
   );
 }

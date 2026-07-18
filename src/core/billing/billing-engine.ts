@@ -1,6 +1,41 @@
 import { createServerClient } from "@/core/database/server";
 import { isWeekend, isHoliday } from "@/utils/date-utils";
 
+interface ScheduledVisitData {
+  id: string;
+  client_id: string;
+  employee_id: string;
+  branch_id: string;
+  visit_type: string;
+  care_plan_id?: string;
+  scheduled_date: string;
+  start_time: string;
+  end_time: string;
+}
+
+interface VisitExecutionData {
+  id: string;
+  scheduled_visit_id: string;
+  completed_at: string;
+  actual_duration_minutes?: number;
+  billable_duration_minutes?: number;
+  status: string;
+  scheduled_visits: ScheduledVisitData;
+}
+
+interface InvoiceItemData {
+  visitId: string;
+  description: string;
+  quantity: number;
+  unitPrice: number;
+  rateType: string;
+  vatPercentage: number;
+  subtotal: number;
+  vat_amount: number;
+  total_amount: number;
+  appliedRules: string[];
+}
+
 interface BillingRules {
   baseHourlyRate: number;
   employeeHourlyRate?: number;
@@ -24,7 +59,7 @@ interface BillingContext {
   startTime: Date;
   endTime: Date;
   visitType: string;
-  carePlanId?: string;
+  carePlanId?: string | undefined;
 }
 
 interface CalculatedRate {
@@ -176,8 +211,9 @@ export class BillingEngine {
     rules: BillingRules,
     visitDate: Date,
     startTime: Date,
-    _endTime: Date
+    endTime: Date
   ): CalculatedRate {
+    void endTime;
     const appliedRules: string[] = [];
 
     let baseRate = rules.baseHourlyRate;
@@ -224,8 +260,7 @@ export class BillingEngine {
       appliedRules.push("night_multiplier");
     }
 
-    const finalRate =
-      baseRate * weekendMultiplier * nightMultiplier * holidayMultiplier;
+    const finalRate = baseRate * weekendMultiplier * nightMultiplier * holidayMultiplier;
 
     return {
       baseRate,
@@ -292,9 +327,10 @@ export class BillingEngine {
       }
 
       // Filter to client
-      const visitsByClient = completedVisits?.filter(
-        (v) => (v as any).scheduled_visits?.client_id === clientId
-      ) || [];
+      const visitsByClient =
+        (completedVisits as unknown as VisitExecutionData[])?.filter(
+          (v) => v.scheduled_visits?.client_id === clientId
+        ) || [];
 
       if (visitsByClient.length === 0) {
         return null;
@@ -313,27 +349,30 @@ export class BillingEngine {
         .maybeSingle();
 
       let invoiceId: string;
-      let totalAmount = 0;
-      const items: any[] = [];
+      const items: InvoiceItemData[] = [];
 
       // Process each visit and calculate billing
       for (const visit of visitsByClient) {
-        const scheduled = (visit as any).scheduled_visits;
+        const scheduled = visit.scheduled_visits;
         const billableMinutes = visit.billable_duration_minutes || 0;
         const billableHours = billableMinutes / 60;
 
         // Resolve billing rules
         const rules = await this.resolveBillingRules({
           organizationId,
-          visitId: visit.id,
+          visitId: visit.id as string,
           clientId,
-          employeeId: scheduled.employee_id,
-          branchId: scheduled.branch_id,
-          visitDate: new Date(scheduled.scheduled_date),
-          startTime: new Date(`${scheduled.scheduled_date}T${scheduled.start_time}`),
-          endTime: new Date(`${scheduled.scheduled_date}T${scheduled.end_time}`),
-          visitType: scheduled.visit_type,
-          carePlanId: scheduled.care_plan_id,
+          employeeId: String(scheduled?.employee_id || ""),
+          branchId: String(scheduled?.branch_id || ""),
+          visitDate: new Date(String(scheduled?.scheduled_date || "")),
+          startTime: new Date(
+            `${String(scheduled?.scheduled_date || "")}T${String(scheduled?.start_time || "")}`
+          ),
+          endTime: new Date(
+            `${String(scheduled?.scheduled_date || "")}T${String(scheduled?.end_time || "")}`
+          ),
+          visitType: String(scheduled?.visit_type || ""),
+          carePlanId: scheduled?.care_plan_id as string | undefined,
         });
 
         // Calculate rate
@@ -348,10 +387,8 @@ export class BillingEngine {
         const itemVat = itemSubtotal * (rules.vatPercentage / 100);
         const itemTotal = itemSubtotal + itemVat;
 
-        totalAmount += itemTotal;
-
         items.push({
-          visitId: visit.id,
+          visitId: scheduled.id,
           description: `${scheduled.visit_type} - ${new Date(
             scheduled.scheduled_date
           ).toLocaleDateString("nl-NL")}`,
@@ -387,10 +424,7 @@ export class BillingEngine {
         if (updateError) throw updateError;
 
         // Remove old items
-        await this.supabase
-          .from("invoice_items")
-          .delete()
-          .eq("invoice_id", invoiceId);
+        await this.supabase.from("invoice_items").delete().eq("invoice_id", invoiceId);
       } else {
         // Create new invoice
         const invoiceNumber = `INV-${Date.now()}-${Math.random()
@@ -430,20 +464,38 @@ export class BillingEngine {
       // Insert invoice items
       for (let i = 0; i < items.length; i++) {
         const item = items[i];
-        await this.supabase.from("invoice_items").insert({
-          organization_id: organizationId,
-          invoice_id: invoiceId,
-          visit_id: item.visitId,
-          description: item.description,
-          quantity: item.quantity,
-          unit_price: item.unitPrice,
-          rate_type: item.rateType,
-          vat_percentage: item.vatPercentage,
-          subtotal: item.subtotal,
-          vat_amount: item.vat_amount,
-          total_amount: item.total_amount,
-          line_number: i + 1,
-        });
+        const { data: insertedItem, error: itemError } = await this.supabase
+          .from("invoice_items")
+          .insert({
+            organization_id: organizationId,
+            invoice_id: invoiceId,
+            visit_id: item.visitId,
+            description: item.description,
+            quantity: item.quantity,
+            unit_price: item.unitPrice,
+            rate_type: item.rateType,
+            vat_percentage: item.vatPercentage,
+            subtotal: item.subtotal,
+            vat_amount: item.vat_amount,
+            total_amount: item.total_amount,
+            line_number: i + 1,
+          })
+          .select()
+          .single();
+
+        if (itemError) {
+          console.error("Error inserting invoice item:", itemError);
+          continue;
+        }
+
+        // Link the matching timesheet to this invoice so the existing
+        // mark_timesheets_billed trigger (migration 010) can flip is_billed
+        // once the invoice status advances past draft.
+        await this.supabase
+          .from("timesheets")
+          .update({ invoice_id: invoiceId, invoice_line_item_id: insertedItem.id })
+          .eq("visit_id", item.visitId)
+          .eq("organization_id", organizationId);
       }
 
       return invoiceId;
@@ -456,10 +508,7 @@ export class BillingEngine {
   /**
    * Create timesheet from visit execution
    */
-  async createTimesheetFromVisit(
-    organizationId: string,
-    visitExecutionId: string
-  ) {
+  async createTimesheetFromVisit(organizationId: string, visitExecutionId: string) {
     try {
       // Get visit execution and scheduled visit details
       const { data: execution, error: execError } = await this.supabase
@@ -489,7 +538,7 @@ export class BillingEngine {
         throw execError || new Error("Visit execution not found");
       }
 
-      const scheduled = (execution as any).scheduled_visits;
+      const scheduled = (execution as unknown as VisitExecutionData).scheduled_visits;
       const visitDate = scheduled.scheduled_date;
       const billableHours = (execution.billable_duration_minutes || 0) / 60;
 
@@ -536,10 +585,7 @@ export class BillingEngine {
 
       if (existingTimesheet) {
         // Update existing
-        await this.supabase
-          .from("timesheets")
-          .update(timesheetData)
-          .eq("id", existingTimesheet.id);
+        await this.supabase.from("timesheets").update(timesheetData).eq("id", existingTimesheet.id);
 
         return existingTimesheet.id;
       } else {
@@ -669,8 +715,7 @@ export class BillingEngine {
           status: newStatus,
           sent_at: newStatus === "sent" ? new Date().toISOString() : undefined,
           paid_at: newStatus === "paid" ? new Date().toISOString() : undefined,
-          cancelled_at:
-            newStatus === "cancelled" ? new Date().toISOString() : undefined,
+          cancelled_at: newStatus === "cancelled" ? new Date().toISOString() : undefined,
           updated_at: new Date().toISOString(),
         })
         .eq("id", invoiceId);

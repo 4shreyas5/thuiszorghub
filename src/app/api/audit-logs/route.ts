@@ -4,7 +4,9 @@ import { NextRequest, NextResponse } from "next/server";
 export async function GET(request: NextRequest) {
   try {
     const supabase = await createServerClient();
-    const { data: { user } } = await supabase.auth.getUser();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
 
     if (!user) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -26,7 +28,14 @@ export async function GET(request: NextRequest) {
     const offset = (page - 1) * limit;
     const action = searchParams.get("action");
     const entityType = searchParams.get("entityType");
+    const entityId = searchParams.get("entityId");
 
+    // audit_logs' real columns are event_type/resource_type/resource_id
+    // (see migration 001) - there is no entity_type/entity_id column on
+    // this table (those only exist on the unrelated documents table).
+    // Aliased back to entity_type/entity_id in the response so the
+    // external contract (query params, response field names) is
+    // unchanged for every existing consumer.
     let query = supabase
       .from("audit_logs")
       .select(
@@ -34,8 +43,8 @@ export async function GET(request: NextRequest) {
         id,
         user_id,
         action,
-        entity_type,
-        entity_id,
+        entity_type:resource_type,
+        entity_id:resource_id,
         changes,
         created_at,
         users(first_name, last_name, email)
@@ -49,12 +58,18 @@ export async function GET(request: NextRequest) {
     }
 
     if (entityType) {
-      query = query.eq("entity_type", entityType);
+      query = query.eq("resource_type", entityType);
     }
 
-    const { data: logs, error, count } = await query
-      .range(offset, offset + limit - 1)
-      .order("created_at", { ascending: false });
+    if (entityId) {
+      query = query.eq("resource_id", entityId);
+    }
+
+    const {
+      data: logs,
+      error,
+      count,
+    } = await query.range(offset, offset + limit - 1).order("created_at", { ascending: false });
 
     if (error) throw error;
 
@@ -69,9 +84,6 @@ export async function GET(request: NextRequest) {
     });
   } catch (error) {
     console.error("Error fetching audit logs:", error);
-    return NextResponse.json(
-      { error: "Internal server error" },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }

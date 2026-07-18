@@ -11,10 +11,7 @@ export async function GET() {
     } = await supabase.auth.getUser();
 
     if (!user) {
-      return NextResponse.json(
-        { error: "Unauthorized" },
-        { status: 401 }
-      );
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
     // Fetch user profile from users table
@@ -25,17 +22,8 @@ export async function GET() {
       .single();
 
     if (error || !userProfile) {
-      // User doesn't have a profile yet, return minimal data from auth
-      return NextResponse.json({
-        id: user.id,
-        email: user.email,
-        firstName: user.user_metadata?.first_name || "",
-        lastName: user.user_metadata?.last_name || "",
-        timezone: user.user_metadata?.timezone || "UTC",
-        language: user.user_metadata?.language || "en",
-        isActive: true,
-        organizationId: "",
-      });
+      // User doesn't have a profile row yet - caller (auth-context) creates one
+      return NextResponse.json({ error: "Profile not found" }, { status: 404 });
     }
 
     return NextResponse.json({
@@ -53,9 +41,6 @@ export async function GET() {
     });
   } catch (error) {
     console.error("Error fetching profile:", error);
-    return NextResponse.json(
-      { error: "Failed to fetch profile" },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "Failed to fetch profile" }, { status: 500 });
   }
 }

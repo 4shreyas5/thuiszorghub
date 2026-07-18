@@ -8,10 +8,35 @@ interface EmployeeFilters {
   branchId?: string | undefined;
 }
 
+interface EmployeeMetricValue extends Record<string, unknown> {
+  employeeName?: string;
+  name?: string;
+  email?: string;
+  hourlyRate?: number;
+  branchId?: string;
+  isActive?: boolean;
+  totalBillableHours?: number;
+  billableHours?: number;
+  nightHours?: number;
+  weekendHours?: number;
+  holidayHours?: number;
+  totalVisits?: number;
+  completedVisits?: number;
+  cancelledVisits?: number;
+  avgVisitTime?: number;
+  utilizationPercent?: number;
+  billedHours?: number;
+  unbilledHours?: number;
+  pendingBilledHours?: number;
+  totalRevenue?: number;
+}
+
 export async function GET(request: NextRequest) {
   try {
     const supabase = await createServerClient();
-    const { data: { user } } = await supabase.auth.getUser();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
 
     if (!user) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -39,8 +64,10 @@ export async function GET(request: NextRequest) {
     };
 
     const now = new Date();
-    const startDate = filters.startDate || new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split('T')[0];
-    const endDate = filters.endDate || now.toISOString().split('T')[0];
+    const startDate =
+      filters.startDate ||
+      new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split("T")[0];
+    const endDate = filters.endDate || now.toISOString().split("T")[0];
 
     // Get employees
     let employeeQuery = supabase
@@ -57,51 +84,64 @@ export async function GET(request: NextRequest) {
     // Get timesheets
     let timesheetQuery = supabase
       .from("timesheets")
-      .select("id, employee_id, billable_hours, night_hours, weekend_hours, holiday_hours, hourly_rate, is_billed, timesheet_date")
+      .select(
+        "id, employee_id, billable_hours, night_hours, weekend_hours, holiday_hours, hourly_rate, is_billed, visit_date"
+      )
       .eq("organization_id", organizationId)
       .eq("is_deleted", false)
-      .gte("timesheet_date", startDate)
-      .lte("timesheet_date", endDate);
+      .gte("visit_date", startDate)
+      .lte("visit_date", endDate);
 
     if (filters.employeeId) timesheetQuery = timesheetQuery.eq("employee_id", filters.employeeId);
 
     const { data: timesheets } = await timesheetQuery;
 
-    // Get visit executions
-    let visitQuery = supabase
+    // Get visit executions - no employee_id/executed_date column on this
+    // table itself (see the operational report's fix above for why); join
+    // scheduled_visits for employee_id and filter client-side.
+    const { data: rawVisits } = await supabase
       .from("visit_executions")
-      .select("id, employee_id, status, actual_duration_minutes, executed_date")
+      .select("id, status, actual_duration_minutes, completed_at, scheduled_visits(employee_id)")
       .eq("organization_id", organizationId)
-      .gte("executed_date", startDate)
-      .lte("executed_date", endDate);
+      .gte("completed_at", `${startDate}T00:00:00Z`)
+      .lte("completed_at", `${endDate}T23:59:59Z`);
 
-    if (filters.employeeId) visitQuery = visitQuery.eq("employee_id", filters.employeeId);
-
-    const { data: visits } = await visitQuery;
+    const visits = (rawVisits || [])
+      .map((v) => ({
+        ...v,
+        employee_id: (v.scheduled_visits as unknown as { employee_id?: string } | null)
+          ?.employee_id,
+      }))
+      .filter((v) => !filters.employeeId || v.employee_id === filters.employeeId);
 
     // Calculate per-employee metrics
-    const employeeMetrics: Record<string, any> = {};
+    const employeeMetrics: Record<string, EmployeeMetricValue> = {};
 
-    employees?.forEach(emp => {
-      const empTimesheets = timesheets?.filter(t => t.employee_id === emp.id) || [];
-      const empVisits = visits?.filter(v => v.employee_id === emp.id) || [];
+    employees?.forEach((emp) => {
+      const empTimesheets = timesheets?.filter((t) => t.employee_id === emp.id) || [];
+      const empVisits = visits?.filter((v) => v.employee_id === emp.id) || [];
 
       const totalBillableHours = empTimesheets.reduce((sum, t) => sum + (t.billable_hours || 0), 0);
       const nightHours = empTimesheets.reduce((sum, t) => sum + (t.night_hours || 0), 0);
       const weekendHours = empTimesheets.reduce((sum, t) => sum + (t.weekend_hours || 0), 0);
       const holidayHours = empTimesheets.reduce((sum, t) => sum + (t.holiday_hours || 0), 0);
 
-      const completedVisits = empVisits.filter(v => v.status === "completed").length;
-      const cancelledVisits = empVisits.filter(v => v.status === "cancelled").length;
+      const completedVisits = empVisits.filter((v) => v.status === "completed").length;
+      const cancelledVisits = empVisits.filter((v) => v.status === "cancelled").length;
 
-      const avgVisitTime = empVisits.length > 0
-        ? empVisits.reduce((sum, v) => sum + (v.actual_duration_minutes || 0), 0) / empVisits.length
-        : 0;
+      const avgVisitTime =
+        empVisits.length > 0
+          ? empVisits.reduce((sum, v) => sum + (v.actual_duration_minutes || 0), 0) /
+            empVisits.length
+          : 0;
 
-      const totalRevenue = empTimesheets.reduce((sum, t) => sum + (t.billable_hours * (t.hourly_rate || 0)), 0);
+      const totalRevenue = empTimesheets.reduce(
+        (sum, t) => sum + t.billable_hours * (t.hourly_rate || 0),
+        0
+      );
       const unbilledRevenue = empTimesheets
-        .filter(t => !t.is_billed)
-        .reduce((sum, t) => sum + (t.billable_hours * (t.hourly_rate || 0)), 0);
+        .filter((t) => !t.is_billed)
+        .reduce((sum, t) => sum + t.billable_hours * (t.hourly_rate || 0), 0);
 
       employeeMetrics[emp.id] = {
         name: `${emp.first_name} ${emp.last_name}`,
@@ -122,31 +162,30 @@ export async function GET(request: NextRequest) {
     });
 
     // Aggregate metrics
-    const totalBillableHours = timesheets?.reduce((sum, t) => sum + (t.billable_hours || 0), 0) || 0;
-    const totalCompletedVisits = visits?.filter(v => v.status === "completed").length || 0;
-    const totalCancelledVisits = visits?.filter(v => v.status === "cancelled").length || 0;
+    const totalBillableHours =
+      timesheets?.reduce((sum, t) => sum + (t.billable_hours || 0), 0) || 0;
+    const totalCompletedVisits = visits?.filter((v) => v.status === "completed").length || 0;
+    const totalCancelledVisits = visits?.filter((v) => v.status === "cancelled").length || 0;
 
     // Utilization percentage
     const avgHours = totalBillableHours / (employees?.length || 1);
     const utilizationPercent = avgHours > 0 ? (avgHours / 40) * 100 : 0; // Assuming 40 hour work week
 
     // Log the report
-    await supabase
-      .from("report_audit_logs")
-      .insert({
-        organization_id: organizationId,
-        user_id: user.id,
-        report_type: "employees",
-        action: "generated",
-        filters,
-        row_count: employees?.length || 0,
-      });
+    await supabase.from("report_audit_logs").insert({
+      organization_id: organizationId,
+      user_id: user.id,
+      report_type: "employees",
+      action: "generated",
+      filters,
+      row_count: employees?.length || 0,
+    });
 
     return NextResponse.json({
       data: {
         employeeMetrics,
         summary: {
-          activeEmployees: employees?.filter(e => e.is_active).length || 0,
+          activeEmployees: employees?.filter((e) => e.is_active).length || 0,
           totalEmployees: employees?.length || 0,
           totalBillableHours: Math.round(totalBillableHours * 100) / 100,
           totalCompletedVisits,
@@ -157,9 +196,6 @@ export async function GET(request: NextRequest) {
     });
   } catch (error) {
     console.error("Error fetching employee report:", error);
-    return NextResponse.json(
-      { error: "Internal server error" },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }

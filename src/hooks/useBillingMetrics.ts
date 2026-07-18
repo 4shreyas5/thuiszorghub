@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback } from "react";
 
 interface FinancialMetrics {
   revenueToday: number;
@@ -12,7 +12,7 @@ interface FinancialMetrics {
   invoicesPaid: number;
 }
 
-export function useBillingMetrics(period: 'day' | 'month' | 'year' = 'month') {
+export function useBillingMetrics(period: "day" | "month" | "year" = "month") {
   const [metrics, setMetrics] = useState<FinancialMetrics | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -24,7 +24,7 @@ export function useBillingMetrics(period: 'day' | 'month' | 'year' = 'month') {
       const response = await globalThis.fetch(`/api/billing/summary?period=${period}`);
 
       if (!response.ok) {
-        throw new Error('Failed to fetch billing metrics');
+        throw new Error("Failed to fetch billing metrics");
       }
 
       const data = await response.json();
@@ -40,7 +40,7 @@ export function useBillingMetrics(period: 'day' | 'month' | 'year' = 'month') {
         invoicesPaid: data.summary.invoices_paid || 0,
       });
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Unknown error');
+      setError(err instanceof Error ? err.message : "Unknown error");
       setMetrics(null);
     } finally {
       setLoading(false);
@@ -48,7 +48,10 @@ export function useBillingMetrics(period: 'day' | 'month' | 'year' = 'month') {
   }, [period]);
 
   useEffect(() => {
-    fetchMetrics();
+    // Deferred to a microtask so the fetch trigger isn't a synchronous setState call in the effect body.
+    queueMicrotask(() => {
+      fetchMetrics();
+    });
   }, [fetchMetrics]);
 
   return { metrics, loading, error, refetch: fetchMetrics };

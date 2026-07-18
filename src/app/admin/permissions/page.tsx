@@ -1,10 +1,15 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { Fragment, useEffect, useState, useCallback, useMemo } from "react";
+import { AlertTriangle, ShieldCheck } from "lucide-react";
 import { PageHeader } from "@/components/admin/PageHeader";
 import { useAuth } from "@/core/context/auth-context";
-import { Badge } from "@/components/ui/Badge";
+import { Card } from "@/components/ui/Card";
 import { Skeleton } from "@/components/ui/Skeleton";
+import { Badge } from "@/components/ui/Badge";
+import { Checkbox } from "@/components/ui/Checkbox";
+import { EmptyState } from "@/components/ui/EmptyState";
+import { Button } from "@/components/ui/Button";
 
 interface Permission {
   id: string;
@@ -12,143 +17,209 @@ interface Permission {
   action: string;
   code: string;
   description?: string;
-  created_at: string;
+}
+
+interface Role {
+  id: string;
+  name: string;
+  is_system: boolean;
+  role_permissions?: Array<{ permissions: { id: string } }>;
 }
 
 export default function PermissionsPage() {
   const { user: authUser } = useAuth();
   const [permissions, setPermissions] = useState<Permission[]>([]);
+  const [roles, setRoles] = useState<Role[]>([]);
   const [loading, setLoading] = useState(true);
-  const [page, setPage] = useState(1);
-  const [total, setTotal] = useState(0);
-  const [selectedModule, setSelectedModule] = useState<string>("");
-  const [modules, setModules] = useState<string[]>([]);
-  const limit = 50;
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [pending, setPending] = useState<string | null>(null); // `${roleId}:${permissionId}` currently saving
 
-  const fetchPermissions = useCallback(async () => {
+  const fetchData = useCallback(async () => {
     try {
       setLoading(true);
-      const params = new URLSearchParams({
-        page: page.toString(),
-        limit: limit.toString(),
-      });
-      if (selectedModule) {
-        params.append("module", selectedModule);
-      }
-      const response = await fetch(`/api/permissions?${params}`);
-      const result = await response.json();
+      setLoadError(null);
+      const [permsRes, rolesRes] = await Promise.all([
+        fetch("/api/permissions?page=1&limit=200"),
+        fetch("/api/roles?page=1&limit=100"),
+      ]);
+      const permsResult = await permsRes.json();
+      const rolesResult = await rolesRes.json();
 
-      if (response.ok) {
-        setPermissions(result.data);
-        setTotal(result.pagination.total);
-        const uniqueModules = [...new Set(result.data.map((p: Permission) => p.module))].sort() as string[];
-        setModules(uniqueModules);
-      }
+      if (!permsRes.ok) throw new Error(permsResult.error || "Failed to load permissions");
+      if (!rolesRes.ok) throw new Error(rolesResult.error || "Failed to load roles");
+
+      setPermissions(permsResult.data || []);
+      setRoles(rolesResult.data || []);
     } catch (error) {
-      console.error("Error fetching permissions:", error);
+      setLoadError(error instanceof Error ? error.message : "Failed to load permission matrix");
     } finally {
       setLoading(false);
     }
-  }, [page, selectedModule]);
+  }, []);
 
   useEffect(() => {
-    if (authUser) {
-      fetchPermissions();
+    // Deferred to a microtask so the fetch trigger isn't a synchronous setState call in the effect body.
+    queueMicrotask(() => {
+      if (authUser) fetchData();
+    });
+  }, [authUser, fetchData]);
+
+  const roleHasPermission = (role: Role, permissionId: string) =>
+    (role.role_permissions || []).some((rp) => rp.permissions.id === permissionId);
+
+  const togglePermission = async (role: Role, permission: Permission) => {
+    const key = `${role.id}:${permission.id}`;
+    const currentlyHas = roleHasPermission(role, permission.id);
+    setPending(key);
+
+    // Optimistic update
+    setRoles((prev) =>
+      prev.map((r) => {
+        if (r.id !== role.id) return r;
+        const nextPerms = currentlyHas
+          ? (r.role_permissions || []).filter((rp) => rp.permissions.id !== permission.id)
+          : [...(r.role_permissions || []), { permissions: { id: permission.id } }];
+        return { ...r, role_permissions: nextPerms };
+      })
+    );
+
+    try {
+      if (currentlyHas) {
+        await fetch(`/api/roles/${role.id}/permissions?permissionId=${permission.id}`, {
+          method: "DELETE",
+        });
+      } else {
+        await fetch(`/api/roles/${role.id}/permissions`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ permissionId: permission.id }),
+        });
+      }
+    } catch (error) {
+      console.error("Error toggling permission:", error);
+      fetchData(); // revert optimistic update by refetching truth
+    } finally {
+      setPending(null);
     }
-  }, [authUser, fetchPermissions]);
+  };
 
-  if (!authUser) {
-    return <div className="p-4">Loading...</div>;
-  }
-
-  const totalPages = Math.ceil(total / limit);
+  const permissionsByModule = useMemo(
+    () =>
+      permissions.reduce<Record<string, Permission[]>>((acc, p) => {
+        (acc[p.module] ||= []).push(p);
+        return acc;
+      }, {}),
+    [permissions]
+  );
 
   return (
     <div className="space-y-6">
-      <PageHeader title="Permissions" description="View all system permissions" />
+      <PageHeader
+        title="Permissions"
+        description="Control which roles can perform which actions. Changes save instantly."
+      />
 
-      <div className="bg-white dark:bg-gray-800 rounded-lg overflow-hidden">
-        <div className="p-4 border-b border-gray-200 dark:border-gray-700">
-          <select
-            value={selectedModule}
-            onChange={(e) => {
-              setSelectedModule(e.target.value);
-              setPage(1);
-            }}
-            className="px-4 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700"
-          >
-            <option value="">All Modules</option>
-            {modules.map((mod) => (
-              <option key={mod} value={mod}>
-                {mod}
-              </option>
-            ))}
-          </select>
-        </div>
-
-        {loading ? (
-          <div className="p-6 space-y-4">
-            {[...Array(5)].map((_, i) => (
-              <Skeleton key={i} className="h-12 w-full" />
-            ))}
-          </div>
-        ) : permissions.length === 0 ? (
-          <div className="p-12 text-center">
-            <p className="text-gray-600 dark:text-gray-400">No permissions found</p>
-          </div>
-        ) : (
-          <>
-            <div className="overflow-x-auto">
-              <table className="w-full">
-                <thead className="bg-gray-50 dark:bg-gray-700">
-                  <tr>
-                    <th className="px-6 py-3 text-left text-sm font-semibold text-gray-900 dark:text-gray-100">Module</th>
-                    <th className="px-6 py-3 text-left text-sm font-semibold text-gray-900 dark:text-gray-100">Action</th>
-                    <th className="px-6 py-3 text-left text-sm font-semibold text-gray-900 dark:text-gray-100">Code</th>
-                    <th className="px-6 py-3 text-left text-sm font-semibold text-gray-900 dark:text-gray-100">Description</th>
+      {loading ? (
+        <Card bordered padding="md" className="space-y-3">
+          {[...Array(6)].map((_, i) => (
+            <Skeleton key={i} className="h-10 w-full" />
+          ))}
+        </Card>
+      ) : loadError ? (
+        <Card bordered padding="md">
+          <EmptyState
+            tone="error"
+            icon={AlertTriangle}
+            title="Couldn't load permission matrix"
+            description={loadError}
+            action={
+              <Button variant="outline" onClick={fetchData}>
+                Retry
+              </Button>
+            }
+          />
+        </Card>
+      ) : roles.length === 0 ? (
+        <Card bordered padding="md">
+          <EmptyState
+            icon={ShieldCheck}
+            title="No roles to configure"
+            description="Create a role first, then assign permissions to it here."
+            action={
+              <Button variant="outline" asChild>
+                <a href="/admin/roles">Go to Roles</a>
+              </Button>
+            }
+          />
+        </Card>
+      ) : (
+        <div className="overflow-x-auto rounded-lg border border-border">
+          <table className="w-full text-sm">
+            <thead className="sticky top-0 z-10 border-b border-border bg-card">
+              <tr>
+                <th className="whitespace-nowrap px-4 py-3 text-left font-medium text-muted-foreground">
+                  Permission
+                </th>
+                {roles.map((role) => (
+                  <th
+                    key={role.id}
+                    className="whitespace-nowrap px-4 py-3 text-center font-medium text-foreground"
+                  >
+                    <div className="flex flex-col items-center gap-1">
+                      {role.name}
+                      <Badge variant={role.is_system ? "primary" : "default"} size="sm">
+                        {role.is_system ? "System" : "Custom"}
+                      </Badge>
+                    </div>
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {Object.entries(permissionsByModule).map(([mod, perms]) => (
+                <Fragment key={mod}>
+                  <tr className="bg-muted/50">
+                    <td
+                      colSpan={roles.length + 1}
+                      className="px-4 py-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground"
+                    >
+                      {mod}
+                    </td>
                   </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
-                  {permissions.map((permission) => (
-                    <tr key={permission.id} className="hover:bg-gray-50 dark:hover:bg-gray-700/50">
-                      <td className="px-6 py-4 text-sm">
-                        <Badge variant="info">{permission.module}</Badge>
+                  {perms.map((permission) => (
+                    <tr
+                      key={permission.id}
+                      className="border-t border-border transition-colors hover:bg-accent/50"
+                    >
+                      <td className="px-4 py-2.5">
+                        <div className="font-medium text-foreground">{permission.action}</div>
+                        <div className="font-mono text-xs text-muted-foreground">
+                          {permission.code}
+                        </div>
                       </td>
-                      <td className="px-6 py-4 text-sm font-medium text-gray-900 dark:text-gray-100">{permission.action}</td>
-                      <td className="px-6 py-4 text-sm text-gray-600 dark:text-gray-400 font-mono">
-                        {permission.code}
-                      </td>
-                      <td className="px-6 py-4 text-sm text-gray-600 dark:text-gray-400">{permission.description || "-"}</td>
+                      {roles.map((role) => {
+                        const key = `${role.id}:${permission.id}`;
+                        return (
+                          <td key={role.id} className="px-4 py-2.5 text-center">
+                            <div className="flex justify-center">
+                              <Checkbox
+                                checked={roleHasPermission(role, permission.id)}
+                                disabled={pending === key}
+                                onCheckedChange={() => togglePermission(role, permission)}
+                                aria-label={`${role.name}: ${permission.code}`}
+                              />
+                            </div>
+                          </td>
+                        );
+                      })}
                     </tr>
                   ))}
-                </tbody>
-              </table>
-            </div>
-
-            {totalPages > 1 && (
-              <div className="px-6 py-4 flex justify-between items-center border-t border-gray-200 dark:border-gray-700">
-                <button
-                  onClick={() => setPage(Math.max(1, page - 1))}
-                  disabled={page === 1}
-                  className="px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-600 disabled:opacity-50"
-                >
-                  Previous
-                </button>
-                <span className="text-sm text-gray-600 dark:text-gray-400">
-                  Page {page} of {totalPages}
-                </span>
-                <button
-                  onClick={() => setPage(Math.min(totalPages, page + 1))}
-                  disabled={page === totalPages}
-                  className="px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-600 disabled:opacity-50"
-                >
-                  Next
-                </button>
-              </div>
-            )}
-          </>
-        )}
-      </div>
+                </Fragment>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }

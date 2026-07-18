@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
 "use client";
 
 import { useForm } from "react-hook-form";
@@ -6,14 +5,17 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { Client, CreateClientPayload, UpdateClientPayload } from "@/types/client";
 import { createClientSchema, updateClientSchema } from "@/core/validation/client";
 import { Input } from "@/components/ui/Input";
+import { Select } from "@/components/ui/Select";
 import { Button } from "@/components/ui/Button";
 import { Textarea } from "@/components/ui/Textarea";
 import { useEffect, useState } from "react";
-import { Loader, AlertCircle } from "lucide-react";
+import { AlertTriangle } from "lucide-react";
+import { ICON_SIZE, ICON_STROKE_WIDTH } from "@/shared/constants/icons";
 
 interface Branch {
   id: string;
   name: string;
+  is_active: boolean;
 }
 
 interface ClientFormProps {
@@ -21,6 +23,26 @@ interface ClientFormProps {
   isLoading?: boolean;
   onSubmit: (data: CreateClientPayload | UpdateClientPayload) => Promise<void>;
 }
+
+/* eslint-disable @typescript-eslint/no-explicit-any */
+
+const CASE_STATUS_OPTIONS = [
+  { value: "active", label: "Active" },
+  { value: "inactive", label: "Inactive" },
+  { value: "discharged", label: "Discharged" },
+];
+
+const RISK_LEVEL_OPTIONS = [
+  { value: "low", label: "Low" },
+  { value: "medium", label: "Medium" },
+  { value: "high", label: "High" },
+];
+
+const STATUS_OPTIONS = [
+  { value: "active", label: "Active" },
+  { value: "inactive", label: "Inactive" },
+  { value: "archived", label: "Archived" },
+];
 
 export function ClientForm({ client, isLoading, onSubmit }: ClientFormProps) {
   const [branches, setBranches] = useState<Branch[]>([]);
@@ -44,6 +66,7 @@ export function ClientForm({ client, isLoading, onSubmit }: ClientFormProps) {
           branch_id: client.branch_id,
           case_status: client.case_status,
           risk_level: client.risk_level,
+          status: client.status,
           emergency_contact_name: client.emergency_contact_name,
           emergency_contact_phone: client.emergency_contact_phone,
           notes: client.notes,
@@ -55,10 +78,11 @@ export function ClientForm({ client, isLoading, onSubmit }: ClientFormProps) {
     const fetchBranches = async () => {
       try {
         setLoadingBranches(true);
-        const response = await fetch("/api/branches");
+        const response = await fetch("/api/branches?page=1&limit=100");
         if (response.ok) {
-          const data = await response.json();
-          setBranches(Array.isArray(data) ? data : data.branches || []);
+          const result = await response.json();
+          const allBranches: Branch[] = result.data || [];
+          setBranches(allBranches.filter((b) => b.is_active));
         }
       } catch (error) {
         console.error("Failed to fetch branches:", error);
@@ -89,300 +113,180 @@ export function ClientForm({ client, isLoading, onSubmit }: ClientFormProps) {
   };
 
   return (
-    <form onSubmit={handleSubmit(handleFormSubmit)} className="space-y-6">
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        {/* First Name */}
-        <div>
-          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-            First Name *
-          </label>
+    <form onSubmit={handleSubmit(handleFormSubmit)} className="space-y-8">
+      <div>
+        <h3 className="text-sm font-semibold text-foreground">Basic Information</h3>
+        <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2">
           <Input
+            label="First Name"
+            required
             placeholder="John"
             {...register("first_name")}
             error={getErrorMessage(errors.first_name)}
           />
-        </div>
-
-        {/* Last Name */}
-        <div>
-          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-            Last Name *
-          </label>
           <Input
+            label="Last Name"
+            required
             placeholder="Doe"
             {...register("last_name")}
             error={getErrorMessage(errors.last_name)}
           />
-        </div>
-
-        {/* Date of Birth */}
-        <div>
-          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-            Date of Birth
-          </label>
           <Input
+            label="Date of Birth"
             type="date"
             {...register("date_of_birth")}
             error={getErrorMessage(errors.date_of_birth)}
           />
-        </div>
-
-        {/* Email */}
-        <div>
-          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-            Email
-          </label>
           <Input
+            label="Email"
             type="email"
             placeholder="john@example.com"
             {...register("email")}
             error={getErrorMessage(errors.email)}
           />
-        </div>
-
-        {/* Phone */}
-        <div>
-          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-            Phone
-          </label>
           <Input
+            label="Phone"
             type="tel"
             placeholder="+31 6 12345678"
             {...register("phone")}
             error={getErrorMessage(errors.phone)}
           />
         </div>
+      </div>
 
-        {/* Branch */}
-        <div>
-          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-            Branch *
-          </label>
-          <div className="relative">
-            <select
+      <div>
+        <h3 className="text-sm font-semibold text-foreground">Care</h3>
+        <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2">
+          <div>
+            <Select
+              label="Branch"
+              required
+              placeholder={loadingBranches ? "Loading branches..." : "Select a branch..."}
+              disabled={loadingBranches || branches.length === 0}
+              options={branches.map((b) => ({ value: b.id, label: b.name }))}
               {...register("branch_id")}
-              className={`
-                w-full px-4 py-2 rounded-lg border appearance-none transition-colors
-                bg-white dark:bg-gray-700 text-gray-900 dark:text-white
-                focus:outline-none focus:ring-2 focus:ring-offset-0
-                disabled:opacity-50 disabled:cursor-not-allowed
-                ${
-                  errors.branch_id
-                    ? "border-red-500 dark:border-red-400 focus:ring-red-500"
-                    : "border-gray-300 dark:border-gray-600 focus:ring-blue-500"
-                }
-              `}
-              disabled={loadingBranches}
-            >
-              <option value="">Select a branch...</option>
-              {loadingBranches ? (
-                <option disabled>Loading branches...</option>
-              ) : (
-                branches.map((branch) => (
-                  <option key={branch.id} value={branch.id}>
-                    {branch.name}
-                  </option>
-                ))
-              )}
-            </select>
+              error={getErrorMessage(errors.branch_id)}
+            />
+            {!loadingBranches && branches.length === 0 && (
+              <p className="mt-1.5 flex items-center gap-1 text-sm text-warning-foreground">
+                <AlertTriangle className={ICON_SIZE.sm} strokeWidth={ICON_STROKE_WIDTH} />
+                No active branches available
+              </p>
+            )}
           </div>
-          {getErrorMessage(errors.branch_id) && (
-            <p className="text-sm text-red-600 dark:text-red-400 flex items-center gap-1 mt-1">
-              <AlertCircle className="w-4 h-4" />
-              {getErrorMessage(errors.branch_id)}
-            </p>
+          <Select
+            label="Case Status"
+            required
+            placeholder="Select case status..."
+            options={CASE_STATUS_OPTIONS}
+            {...register("case_status")}
+            error={getErrorMessage(errors.case_status)}
+            helperText="Whether this client's care case is currently open."
+          />
+          <Select
+            label="Risk Level"
+            placeholder="Select risk level..."
+            options={RISK_LEVEL_OPTIONS}
+            {...register("risk_level")}
+            error={getErrorMessage(errors.risk_level)}
+          />
+          {client && (
+            <Select
+              label="Status"
+              options={STATUS_OPTIONS}
+              {...register("status")}
+              error={getErrorMessage(errors.status)}
+              helperText="Archiving is reversible - use the Activate action on an archived client to restore them."
+            />
           )}
         </div>
+      </div>
 
-        {/* Case Status */}
-        <div>
-          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-            Case Status *
-          </label>
-          <div className="relative">
-            <select
-              {...register("case_status")}
-              className={`
-                w-full px-4 py-2 rounded-lg border appearance-none transition-colors
-                bg-white dark:bg-gray-700 text-gray-900 dark:text-white
-                focus:outline-none focus:ring-2 focus:ring-offset-0
-                disabled:opacity-50 disabled:cursor-not-allowed
-                ${
-                  errors.case_status
-                    ? "border-red-500 dark:border-red-400 focus:ring-red-500"
-                    : "border-gray-300 dark:border-gray-600 focus:ring-blue-500"
-                }
-              `}
-            >
-              <option value="">Select case status...</option>
-              <option value="active">Active</option>
-              <option value="inactive">Inactive</option>
-              <option value="discharged">Discharged</option>
-            </select>
-          </div>
-          {getErrorMessage(errors.case_status) && (
-            <p className="text-sm text-red-600 dark:text-red-400 flex items-center gap-1 mt-1">
-              <AlertCircle className="w-4 h-4" />
-              {getErrorMessage(errors.case_status)}
-            </p>
-          )}
-        </div>
-
-        {/* Risk Level */}
-        <div>
-          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-            Risk Level
-          </label>
-          <div className="relative">
-            <select
-              {...register("risk_level")}
-              className={`
-                w-full px-4 py-2 rounded-lg border appearance-none transition-colors
-                bg-white dark:bg-gray-700 text-gray-900 dark:text-white
-                focus:outline-none focus:ring-2 focus:ring-offset-0
-                ${
-                  errors.risk_level
-                    ? "border-red-500 dark:border-red-400 focus:ring-red-500"
-                    : "border-gray-300 dark:border-gray-600 focus:ring-blue-500"
-                }
-              `}
-            >
-              <option value="">Select risk level...</option>
-              <option value="low">Low</option>
-              <option value="medium">Medium</option>
-              <option value="high">High</option>
-            </select>
-          </div>
-        </div>
-
-        {/* Emergency Contact Name */}
-        <div>
-          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-            Emergency Contact Name
-          </label>
+      <div>
+        <h3 className="text-sm font-semibold text-foreground">Emergency Contact</h3>
+        <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2">
           <Input
-            placeholder="Emergency contact name"
+            label="Name"
             {...register("emergency_contact_name")}
             error={getErrorMessage(errors.emergency_contact_name)}
           />
-        </div>
-
-        {/* Emergency Contact Phone */}
-        <div>
-          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-            Emergency Contact Phone
-          </label>
           <Input
+            label="Phone"
             type="tel"
-            placeholder="+31 6 12345678"
             {...register("emergency_contact_phone")}
             error={getErrorMessage(errors.emergency_contact_phone)}
           />
         </div>
+      </div>
 
-        {/* Address Line 1 */}
-        <div>
-          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-            Street Address
-          </label>
+      <div>
+        <h3 className="text-sm font-semibold text-foreground">Address</h3>
+        <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2">
           <Input
+            label="Street Address"
             placeholder="123 Main Street"
             {...register("address_line_1")}
             error={getErrorMessage(errors.address_line_1)}
           />
-        </div>
-
-        {/* Address Line 2 */}
-        <div>
-          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-            Address Line 2
-          </label>
           <Input
+            label="Address Line 2"
             placeholder="Apartment, suite, etc."
             {...register("address_line_2")}
             error={getErrorMessage(errors.address_line_2)}
           />
-        </div>
-
-        {/* Postal Code */}
-        <div>
-          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-            Postal Code
-          </label>
           <Input
+            label="Postal Code"
             placeholder="1234 AB"
             {...register("postal_code")}
             error={getErrorMessage(errors.postal_code)}
           />
-        </div>
-
-        {/* City */}
-        <div>
-          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-            City
-          </label>
           <Input
+            label="City"
             placeholder="Amsterdam"
             {...register("city")}
             error={getErrorMessage(errors.city)}
           />
-        </div>
-
-        {/* Country */}
-        <div>
-          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-            Country
-          </label>
           <Input
+            label="Country"
             placeholder="Netherlands"
             {...register("country")}
             error={getErrorMessage(errors.country)}
           />
         </div>
+      </div>
 
-        {/* Insurance Provider */}
-        <div>
-          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-            Insurance Provider
-          </label>
+      <div>
+        <h3 className="text-sm font-semibold text-foreground">Insurance</h3>
+        <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2">
           <Input
+            label="Insurance Provider"
             placeholder="Insurance company name"
             {...register("insurance_provider")}
             error={getErrorMessage(errors.insurance_provider)}
           />
-        </div>
-
-        {/* Policy Number */}
-        <div>
-          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-            Policy Number
-          </label>
           <Input
-            placeholder="Policy number"
+            label="Policy Number"
             {...register("policy_number")}
             error={getErrorMessage(errors.policy_number)}
           />
         </div>
       </div>
 
-      {/* Notes */}
       <div>
-        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-          Notes
-        </label>
-        <Textarea
-          placeholder="Additional information about the client..."
-          {...register("notes")}
-          error={getErrorMessage(errors.notes)}
-          rows={4}
-        />
+        <h3 className="text-sm font-semibold text-foreground">Notes</h3>
+        <div className="mt-4">
+          <Textarea
+            placeholder="Additional information about the client..."
+            {...register("notes")}
+            error={getErrorMessage(errors.notes)}
+            rows={4}
+          />
+        </div>
       </div>
 
-      {/* Submit Button */}
-      <div className="flex gap-4">
-        <Button type="submit" disabled={isLoading} className="flex gap-2 items-center">
-          {isLoading && <Loader className="w-4 h-4 animate-spin" />}
-          {client ? "Update Client" : "Create Client"}
+      <div className="flex gap-3 border-t border-border pt-6">
+        <Button type="submit" loading={isLoading}>
+          {client ? "Save Changes" : "Create Client"}
         </Button>
       </div>
     </form>

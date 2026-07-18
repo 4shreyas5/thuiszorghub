@@ -1,17 +1,18 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
 "use client";
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { PageHeader } from "@/components/admin/PageHeader";
 import { EmployeeForm } from "@/components/admin/EmployeeForm";
+import { Card } from "@/components/ui/Card";
+import { CreateEmployeePayload, UpdateEmployeePayload } from "@/types/employee";
 
 export default function NewEmployeePage() {
   const router = useRouter();
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const handleSubmit = async (data: any) => {
+  const handleSubmit = async (data: CreateEmployeePayload | UpdateEmployeePayload) => {
     try {
       setIsLoading(true);
       setError(null);
@@ -22,13 +23,10 @@ export default function NewEmployeePage() {
         body: JSON.stringify(data),
       });
 
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || "Failed to create employee");
-      }
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "Failed to create employee");
 
-      const employee = await response.json();
-      router.push(`/admin/employees/${employee.id}`);
+      router.push(`/admin/employees/${result.id}`);
     } catch (err) {
       const message = err instanceof Error ? err.message : "Failed to create employee";
       setError(message);
@@ -40,17 +38,20 @@ export default function NewEmployeePage() {
 
   return (
     <div className="space-y-6">
-      <PageHeader title="Create Employee" description="Add a new team member" />
+      <PageHeader
+        title="Create Employee"
+        description="Add a new caregiver or office staff member."
+      />
 
       {error && (
-        <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-4 text-red-700 dark:text-red-400">
+        <div className="rounded-md border border-danger/30 bg-danger/10 p-4 text-sm text-danger">
           {error}
         </div>
       )}
 
-      <div className="bg-white dark:bg-gray-800 rounded-lg p-6">
+      <Card bordered padding="lg">
         <EmployeeForm onSubmit={handleSubmit} isLoading={isLoading} />
-      </div>
+      </Card>
     </div>
   );
 }

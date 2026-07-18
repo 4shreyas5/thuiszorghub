@@ -1,274 +1,241 @@
-'use client';
+"use client";
 
-import { useEffect, useState, useCallback } from 'react';
-import { PageHeader } from '@/components/admin/PageHeader';
-import { useSession } from '@/hooks/useSession';
+import { useState, useCallback, useEffect } from "react";
+import { Clock3, AlertTriangle } from "lucide-react";
+import { PageHeader } from "@/components/admin/PageHeader";
+import { Select } from "@/components/ui/Select";
+import { Input } from "@/components/ui/Input";
+import { Button } from "@/components/ui/Button";
+import { Card } from "@/components/ui/Card";
+import { Skeleton } from "@/components/ui/Skeleton";
+import { EmptyState } from "@/components/ui/EmptyState";
+import { Pagination } from "@/components/ui/Pagination";
+import { Badge } from "@/components/ui/Badge";
+import {
+  Table,
+  TableHead,
+  TableBody,
+  TableRow,
+  TableHeaderCell,
+  TableCell,
+} from "@/components/ui/Table";
 
 interface Timesheet {
   id: string;
-  visitDate: string;
-  billableHours: number;
-  nightHours: number;
-  weekendHours: number;
-  holidayHours: number;
-  hourlyRate: number;
-  isBilled: boolean;
-  employee?: {
-    first_name: string;
-    last_name: string;
-  };
-  client?: {
-    first_name: string;
-    last_name: string;
-  };
-  visit?: {
-    title: string;
-    visit_type: string;
-  };
+  visit_date: string;
+  billable_hours: number;
+  hourly_rate: number;
+  is_billed: boolean;
+  employee?: { first_name: string; last_name: string } | null;
+  client?: { first_name: string; last_name: string } | null;
 }
 
+const BILLED_OPTIONS = [
+  { value: "", label: "All" },
+  { value: "false", label: "Unbilled" },
+  { value: "true", label: "Billed" },
+];
+
 export default function TimesheetsPage() {
-  const { isAuthenticated, isLoading } = useSession();
   const [timesheets, setTimesheets] = useState<Timesheet[]>([]);
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
-  const [filter, setFilter] = useState({
-    isBilled: '',
-    startDate: '',
-    endDate: '',
-  });
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [isBilled, setIsBilled] = useState("");
+  const [startDate, setStartDate] = useState("");
+  const [endDate, setEndDate] = useState("");
 
   const limit = 20;
 
-  const fetchTimesheets = useCallback(async () => {
-    try {
-      const offset = (page - 1) * limit;
-      const query = new URLSearchParams({
-        limit: limit.toString(),
-        offset: offset.toString(),
-      });
+  const fetchTimesheets = useCallback(
+    async (targetPage = page) => {
+      try {
+        setLoading(true);
+        setLoadError(null);
+        const offset = (targetPage - 1) * limit;
+        const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+        if (isBilled) params.append("isBilled", isBilled);
+        if (startDate) params.append("startDate", startDate);
+        if (endDate) params.append("endDate", endDate);
 
-      if (filter.isBilled) {
-        query.append('isBilled', filter.isBilled === 'true' ? 'true' : 'false');
-      }
-      if (filter.startDate) {
-        query.append('startDate', filter.startDate);
-      }
-      if (filter.endDate) {
-        query.append('endDate', filter.endDate);
-      }
-
-      const response = await fetch(`/api/billing/timesheets?${query}`);
-      if (response.ok) {
+        const response = await fetch(`/api/billing/timesheets?${params}`);
         const data = await response.json();
+        if (!response.ok) throw new Error(data.error || "Failed to fetch timesheets");
+
         setTimesheets(data.data || []);
         setTotal(data.pagination?.total || 0);
+      } catch (error) {
+        setLoadError(error instanceof Error ? error.message : "Failed to load timesheets");
+      } finally {
+        setLoading(false);
       }
-    } finally {
-      setLoading(false);
-    }
-  }, [page, limit, filter]);
-
-  useEffect(() => {
-    if (!isLoading && isAuthenticated) {
-      fetchTimesheets();
-    }
-  }, [isAuthenticated, isLoading, fetchTimesheets]);
-
-  const totalBillableHours = timesheets.reduce((sum, ts) => sum + ts.billableHours, 0);
-  const totalRevenue = timesheets.reduce(
-    (sum, ts) => sum + ts.billableHours * ts.hourlyRate,
-    0
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [isBilled, startDate, endDate]
   );
 
-  if (isLoading || loading) {
-    return <div className="animate-pulse">Loading...</div>;
-  }
+  useEffect(() => {
+    // Deferred to a microtask so these setState/fetch calls aren't synchronous within the effect body.
+    queueMicrotask(() => {
+      setPage(1);
+      fetchTimesheets(1);
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isBilled, startDate, endDate]);
 
-  const unbilledCount = timesheets.filter((ts) => !ts.isBilled).length;
+  useEffect(() => {
+    queueMicrotask(() => {
+      if (page > 1) fetchTimesheets(page);
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [page]);
+
+  const pageCount = Math.max(1, Math.ceil(total / limit));
+  const totalBillableHours = timesheets.reduce(
+    (sum, ts) => sum + Number(ts.billable_hours || 0),
+    0
+  );
+  const totalRevenue = timesheets.reduce(
+    (sum, ts) => sum + Number(ts.billable_hours || 0) * Number(ts.hourly_rate || 0),
+    0
+  );
+  const unbilledCount = timesheets.filter((ts) => !ts.is_billed).length;
+  const hasFilters = !!(isBilled || startDate || endDate);
 
   return (
     <div className="space-y-6">
       <PageHeader
         title="Timesheets"
-        description="Track billable hours and employee time entries"
+        description="Track billable hours and employee time entries."
       />
 
-      {/* Summary Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        <div className="bg-white rounded-lg shadow border border-gray-200 p-6">
-          <p className="text-sm font-medium text-gray-600 mb-2">Total Billable Hours</p>
-          <p className="text-3xl font-bold text-gray-900">
-            {totalBillableHours.toFixed(1)}h
+      <div className="grid grid-cols-1 gap-6 md:grid-cols-3">
+        <Card bordered padding="md">
+          <p className="text-sm font-medium text-muted-foreground mb-2">Total Billable Hours</p>
+          <p className="text-3xl font-bold text-foreground">{totalBillableHours.toFixed(1)}h</p>
+          <p className="text-xs text-muted-foreground mt-2">
+            {timesheets.length} entries on this page
           </p>
-          <p className="text-xs text-gray-500 mt-2">{timesheets.length} entries</p>
-        </div>
-        <div className="bg-white rounded-lg shadow border border-gray-200 p-6">
-          <p className="text-sm font-medium text-gray-600 mb-2">Estimated Revenue</p>
-          <p className="text-3xl font-bold text-green-600">
-            €{totalRevenue.toLocaleString('nl-NL', { minimumFractionDigits: 2 })}
+        </Card>
+        <Card bordered padding="md">
+          <p className="text-sm font-medium text-muted-foreground mb-2">Estimated Revenue</p>
+          <p className="text-3xl font-bold text-success">
+            €{totalRevenue.toLocaleString("nl-NL", { minimumFractionDigits: 2 })}
           </p>
-        </div>
-        <div className="bg-white rounded-lg shadow border border-gray-200 p-6">
-          <p className="text-sm font-medium text-gray-600 mb-2">Unbilled</p>
-          <p className="text-3xl font-bold text-orange-600">{unbilledCount}</p>
-          <p className="text-xs text-gray-500 mt-2">entries waiting to invoice</p>
-        </div>
+        </Card>
+        <Card bordered padding="md">
+          <p className="text-sm font-medium text-muted-foreground mb-2">Unbilled</p>
+          <p className="text-3xl font-bold text-warning-foreground">{unbilledCount}</p>
+          <p className="text-xs text-muted-foreground mt-2">entries waiting to invoice</p>
+        </Card>
       </div>
 
-      {/* Filters */}
-      <div className="bg-white rounded-lg shadow border border-gray-200 p-4">
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Billing Status
-            </label>
-            <select
-              value={filter.isBilled}
-              onChange={(e) => {
-                setFilter({ ...filter, isBilled: e.target.value });
-                setPage(1);
-              }}
-              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none"
-            >
-              <option value="">All</option>
-              <option value="false">Unbilled</option>
-              <option value="true">Billed</option>
-            </select>
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Start Date
-            </label>
-            <input
-              type="date"
-              value={filter.startDate}
-              onChange={(e) => {
-                setFilter({ ...filter, startDate: e.target.value });
-                setPage(1);
-              }}
-              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none"
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              End Date
-            </label>
-            <input
-              type="date"
-              value={filter.endDate}
-              onChange={(e) => {
-                setFilter({ ...filter, endDate: e.target.value });
-                setPage(1);
-              }}
-              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none"
-            />
-          </div>
+      <Card bordered padding="md" className="space-y-4">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+          <Select
+            value={isBilled}
+            onChange={(e) => setIsBilled(e.target.value)}
+            options={BILLED_OPTIONS}
+          />
+          <Input
+            label="From"
+            type="date"
+            value={startDate}
+            onChange={(e) => setStartDate(e.target.value)}
+          />
+          <Input
+            label="To"
+            type="date"
+            value={endDate}
+            onChange={(e) => setEndDate(e.target.value)}
+          />
         </div>
-      </div>
+      </Card>
 
-      {/* Timesheets Table */}
-      <div className="bg-white rounded-lg shadow border border-gray-200 overflow-hidden">
-        <table className="w-full">
-          <thead className="bg-gray-50 border-b border-gray-200">
-            <tr>
-              <th className="px-6 py-3 text-left text-sm font-semibold text-gray-900">
-                Date
-              </th>
-              <th className="px-6 py-3 text-left text-sm font-semibold text-gray-900">
-                Employee
-              </th>
-              <th className="px-6 py-3 text-left text-sm font-semibold text-gray-900">
-                Client
-              </th>
-              <th className="px-6 py-3 text-right text-sm font-semibold text-gray-900">
-                Billable Hours
-              </th>
-              <th className="px-6 py-3 text-right text-sm font-semibold text-gray-900">
-                Rate
-              </th>
-              <th className="px-6 py-3 text-right text-sm font-semibold text-gray-900">
-                Amount
-              </th>
-              <th className="px-6 py-3 text-center text-sm font-semibold text-gray-900">
-                Billed
-              </th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-gray-200">
-            {timesheets.length === 0 ? (
-              <tr>
-                <td colSpan={7} className="px-6 py-8 text-center text-gray-500">
-                  No timesheets found
-                </td>
-              </tr>
-            ) : (
-              timesheets.map((ts) => (
-                <tr key={ts.id} className="hover:bg-gray-50 transition">
-                  <td className="px-6 py-4 text-sm text-gray-900">
-                    {new Date(ts.visitDate).toLocaleDateString('nl-NL')}
-                  </td>
-                  <td className="px-6 py-4 text-sm text-gray-900">
-                    {ts.employee
-                      ? `${ts.employee.first_name} ${ts.employee.last_name}`
-                      : 'N/A'}
-                  </td>
-                  <td className="px-6 py-4 text-sm text-gray-900">
-                    {ts.client
-                      ? `${ts.client.first_name} ${ts.client.last_name}`
-                      : 'N/A'}
-                  </td>
-                  <td className="px-6 py-4 text-sm text-right text-gray-900">
-                    {ts.billableHours.toFixed(2)}h
-                  </td>
-                  <td className="px-6 py-4 text-sm text-right text-gray-900">
-                    €{ts.hourlyRate.toFixed(2)}
-                  </td>
-                  <td className="px-6 py-4 text-sm text-right font-medium text-gray-900">
-                    €{(ts.billableHours * ts.hourlyRate).toFixed(2)}
-                  </td>
-                  <td className="px-6 py-4 text-sm text-center">
-                    <span
-                      className={`px-3 py-1 rounded-full text-xs font-medium ${
-                        ts.isBilled
-                          ? 'bg-green-100 text-green-800'
-                          : 'bg-yellow-100 text-yellow-800'
-                      }`}
-                    >
-                      {ts.isBilled ? 'Yes' : 'No'}
-                    </span>
-                  </td>
-                </tr>
-              ))
-            )}
-          </tbody>
-        </table>
-      </div>
+      {loading ? (
+        <Card bordered padding="md" className="space-y-3">
+          {[...Array(5)].map((_, i) => (
+            <Skeleton key={i} className="h-12 w-full" />
+          ))}
+        </Card>
+      ) : loadError ? (
+        <Card bordered padding="md">
+          <EmptyState
+            tone="error"
+            icon={AlertTriangle}
+            title="Couldn't load timesheets"
+            description={loadError}
+            action={
+              <Button variant="outline" onClick={() => fetchTimesheets(page)}>
+                Retry
+              </Button>
+            }
+          />
+        </Card>
+      ) : timesheets.length === 0 ? (
+        <Card bordered padding="md">
+          <EmptyState
+            icon={Clock3}
+            title={hasFilters ? "No matching timesheets" : "No timesheets yet"}
+            description={
+              hasFilters
+                ? "Try clearing a filter."
+                : "Timesheets are generated from completed visits via the Billing overview page."
+            }
+          />
+        </Card>
+      ) : (
+        <div className="space-y-4">
+          <Table>
+            <TableHead>
+              <TableRow hover={false}>
+                <TableHeaderCell>Date</TableHeaderCell>
+                <TableHeaderCell>Employee</TableHeaderCell>
+                <TableHeaderCell>Client</TableHeaderCell>
+                <TableHeaderCell className="text-right">Billable Hours</TableHeaderCell>
+                <TableHeaderCell className="text-right">Rate</TableHeaderCell>
+                <TableHeaderCell className="text-right">Amount</TableHeaderCell>
+                <TableHeaderCell className="text-center">Billed</TableHeaderCell>
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              {timesheets.map((ts) => (
+                <TableRow key={ts.id}>
+                  <TableCell className="text-muted-foreground">
+                    {new Date(ts.visit_date).toLocaleDateString("nl-NL")}
+                  </TableCell>
+                  <TableCell className="text-foreground">
+                    {ts.employee ? `${ts.employee.first_name} ${ts.employee.last_name}` : "N/A"}
+                  </TableCell>
+                  <TableCell className="text-foreground">
+                    {ts.client ? `${ts.client.first_name} ${ts.client.last_name}` : "N/A"}
+                  </TableCell>
+                  <TableCell align="right">{Number(ts.billable_hours || 0).toFixed(2)}h</TableCell>
+                  <TableCell align="right">€{Number(ts.hourly_rate || 0).toFixed(2)}</TableCell>
+                  <TableCell align="right" className="font-medium text-foreground">
+                    €{(Number(ts.billable_hours || 0) * Number(ts.hourly_rate || 0)).toFixed(2)}
+                  </TableCell>
+                  <TableCell align="center">
+                    <Badge variant={ts.is_billed ? "success" : "warning"} size="sm">
+                      {ts.is_billed ? "Yes" : "No"}
+                    </Badge>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
 
-      {/* Pagination */}
-      <div className="flex items-center justify-between bg-white rounded-lg shadow border border-gray-200 p-4">
-        <div className="text-sm text-gray-600">
-          Showing {Math.min((page - 1) * limit + 1, total)} to{' '}
-          {Math.min(page * limit, total)} of {total} timesheets
+          {pageCount > 1 && (
+            <div className="flex items-center justify-between">
+              <p className="text-sm text-muted-foreground">
+                {total} timesheet{total === 1 ? "" : "s"}
+              </p>
+              <Pagination page={page} pageCount={pageCount} onPageChange={setPage} />
+            </div>
+          )}
         </div>
-        <div className="flex gap-2">
-          <button
-            onClick={() => setPage(Math.max(1, page - 1))}
-            disabled={page === 1}
-            className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50"
-          >
-            Previous
-          </button>
-          <button
-            onClick={() => setPage(page + 1)}
-            disabled={page * limit >= total}
-            className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50"
-          >
-            Next
-          </button>
-        </div>
-      </div>
+      )}
     </div>
   );
 }

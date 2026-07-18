@@ -2,14 +2,37 @@
 import { createServerClient } from "@/core/database/server";
 import { NextRequest, NextResponse } from "next/server";
 import { createVisitSchema } from "@/core/validation/visit";
+import { checkVisitConflicts } from "@/core/scheduling/conflicts";
 
 export async function GET(request: NextRequest) {
   try {
     const supabase = await createServerClient();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+
+    if (!user) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    const { data: userData } = await supabase
+      .from("users")
+      .select("organization_id")
+      .eq("id", user.id)
+      .single();
+
+    if (!userData || !userData.organization_id) {
+      return NextResponse.json(
+        { error: "User not found or not assigned to organization" },
+        { status: 404 }
+      );
+    }
+
     const searchParams = request.nextUrl.searchParams;
 
     const page = parseInt(searchParams.get("page") || "1");
     const limit = parseInt(searchParams.get("limit") || "20");
+    const search = searchParams.get("search") || "";
     const status = searchParams.get("status") || "";
     const employeeId = searchParams.get("employeeId") || "";
     const clientId = searchParams.get("clientId") || "";
@@ -26,9 +49,15 @@ export async function GET(request: NextRequest) {
         client:clients(id, first_name, last_name, is_active),
         employee:employees(id, first_name, last_name, is_active),
         branch:branches(id, name),
-        care_plan:care_plans(id, title)`
+        care_plan:care_plans(id, title)`,
+        { count: "exact" }
       )
+      .eq("organization_id", userData.organization_id)
       .eq("is_deleted", false);
+
+    if (search) {
+      query = query.ilike("title", `%${search}%`);
+    }
 
     if (status) {
       query = query.eq("status", status);
@@ -50,7 +79,11 @@ export async function GET(request: NextRequest) {
       query = query.lte("scheduled_date", dateTo);
     }
 
-    const { data: visits, error, count } = await query
+    const {
+      data: visits,
+      error,
+      count,
+    } = await query
       .order(sortBy, { ascending: sortOrder === "asc" })
       .range(offset, offset + limit - 1);
 
@@ -62,8 +95,8 @@ export async function GET(request: NextRequest) {
         page,
         limit,
         total: count || 0,
-        pages: Math.ceil((count || 0) / limit)
-      }
+        pages: Math.ceil((count || 0) / limit),
+      },
     });
   } catch (error) {
     console.error("Error fetching visits:", error);
@@ -74,7 +107,9 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   try {
     const supabase = await createServerClient();
-    const { data: { user } } = await supabase.auth.getUser();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
 
     if (!user) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -101,10 +136,7 @@ export async function POST(request: NextRequest) {
       .single();
 
     if (!client || !client.is_active) {
-      return NextResponse.json(
-        { error: "Client not found or inactive" },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: "Client not found or inactive" }, { status: 400 });
     }
 
     if (client.organization_id !== userData.organization_id) {
@@ -120,34 +152,32 @@ export async function POST(request: NextRequest) {
         .single();
 
       if (!employee || !employee.is_active) {
-        return NextResponse.json(
-          { error: "Employee not found or inactive" },
-          { status: 400 }
-        );
+        return NextResponse.json({ error: "Employee not found or inactive" }, { status: 400 });
       }
 
       if (employee.organization_id !== userData.organization_id) {
-        return NextResponse.json({ error: "Cross-organization visit not allowed" }, { status: 403 });
+        return NextResponse.json(
+          { error: "Cross-organization visit not allowed" },
+          { status: 403 }
+        );
       }
 
-      // Check for scheduling conflicts
-      const { data: conflicts } = await (supabase.from("scheduled_visits") as any)
-        .select("*")
-        .eq("organization_id", userData.organization_id)
-        .eq("employee_id", validatedData.employee_id)
-        .eq("scheduled_date", validatedData.scheduled_date)
-        .eq("is_deleted", false);
-
-      const hasConflict = conflicts?.some((visit: any) => {
-        const visitStart = new Date(`2000-01-01T${visit.start_time}`);
-        const visitEnd = new Date(`2000-01-01T${visit.end_time}`);
-        const newStart = new Date(`2000-01-01T${validatedData.start_time}`);
-        const newEnd = new Date(`2000-01-01T${validatedData.end_time}`);
-
-        return !(newEnd <= visitStart || newStart >= visitEnd);
+      // Check for scheduling conflicts - shared helper (src/core/scheduling/conflicts.ts)
+      // also used by /api/visits/conflicts and PUT/assign, so there's one
+      // implementation instead of three. Only DOUBLE_BOOKING hard-blocks
+      // creation here, preserving existing accept/reject behavior exactly -
+      // the richer conflict types (unavailability, working hours, inactive
+      // client) are surfaced to the form as non-blocking warnings via the
+      // dedicated /api/visits/conflicts endpoint instead.
+      const conflicts = await checkVisitConflicts(supabase, {
+        employeeId: validatedData.employee_id,
+        clientId: validatedData.client_id,
+        scheduledDate: validatedData.scheduled_date,
+        startTime: validatedData.start_time,
+        endTime: validatedData.end_time,
       });
 
-      if (hasConflict) {
+      if (conflicts.some((c) => c.type === "DOUBLE_BOOKING")) {
         return NextResponse.json(
           { error: "Employee has a scheduling conflict at this time" },
           { status: 409 }
@@ -174,10 +204,11 @@ export async function POST(request: NextRequest) {
         scheduled_date: validatedData.scheduled_date,
         start_time: validatedData.start_time,
         end_time: validatedData.end_time,
-        estimated_duration_minutes: validatedData.estimated_duration_minutes || Math.round(durationMinutes),
+        estimated_duration_minutes:
+          validatedData.estimated_duration_minutes || Math.round(durationMinutes),
         priority: validatedData.priority || "normal",
         status: "scheduled",
-        notes: validatedData.notes || null
+        notes: validatedData.notes || null,
       })
       .select()
       .single();
@@ -192,7 +223,7 @@ export async function POST(request: NextRequest) {
       resource_type: "scheduled_visits",
       resource_id: visit.id,
       action: "created",
-      changes: { new_values: validatedData }
+      changes: { new_values: validatedData },
     });
 
     return NextResponse.json(visit, { status: 201 });

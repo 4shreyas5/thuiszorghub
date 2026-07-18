@@ -1,7 +1,10 @@
+export type ClientStatus = "active" | "inactive" | "archived";
+
 export interface Client {
   id: string;
   organization_id: string;
   branch_id: string;
+  branch?: { id: string; name: string };
   first_name: string;
   last_name: string;
   date_of_birth?: string;
@@ -11,12 +14,41 @@ export interface Client {
   emergency_contact_phone?: string;
   case_status: "active" | "inactive" | "discharged";
   risk_level?: "low" | "medium" | "high";
+  status: ClientStatus;
   is_active: boolean;
   notes?: string;
   is_deleted: boolean;
   deleted_at?: string;
   created_at: string;
   updated_at: string;
+  addresses?: ClientAddress[];
+  insurance?: ClientInsurance[];
+  contacts?: ClientContact[];
+  medical_info?: ClientMedicalInfo | null;
+  allergies?: ClientAllergy[];
+  assignments?: {
+    is_primary: boolean;
+    employee: { first_name: string; last_name: string } | null;
+  }[];
+}
+
+export interface ClientMedicalInfo {
+  id: string;
+  client_id: string;
+  blood_type?: string;
+  mobility_status?: string;
+  cognitive_status?: string;
+  hearing_status?: string;
+  vision_status?: string;
+  special_needs?: string;
+}
+
+export interface ClientAllergy {
+  id: string;
+  client_id: string;
+  allergen: string;
+  reaction?: string;
+  severity?: string;
 }
 
 export interface ClientAddress {
@@ -79,5 +111,6 @@ export interface CreateClientPayload {
 }
 
 export interface UpdateClientPayload extends Partial<CreateClientPayload> {
+  status?: ClientStatus;
   is_active?: boolean;
 }

@@ -13,10 +13,7 @@ export async function GET(request: NextRequest) {
     } = await supabase.auth.getUser();
 
     if (!user) {
-      return NextResponse.json(
-        { error: "Unauthorized" },
-        { status: 401 }
-      );
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
     // Get user's organization
@@ -27,10 +24,7 @@ export async function GET(request: NextRequest) {
       .single();
 
     if (!userData) {
-      return NextResponse.json(
-        { error: "User not found" },
-        { status: 404 }
-      );
+      return NextResponse.json({ error: "User not found" }, { status: 404 });
     }
 
     const organizationId = userData.organization_id;
@@ -41,7 +35,9 @@ export async function GET(request: NextRequest) {
       status: searchParams.get("status") || undefined,
       clientId: searchParams.get("clientId") || undefined,
       branchId: searchParams.get("branchId") || undefined,
-      startDate: searchParams.get("startDate") ? new Date(searchParams.get("startDate")!) : undefined,
+      startDate: searchParams.get("startDate")
+        ? new Date(searchParams.get("startDate")!)
+        : undefined,
       endDate: searchParams.get("endDate") ? new Date(searchParams.get("endDate")!) : undefined,
       search: searchParams.get("search") || undefined,
       limit: parseInt(searchParams.get("limit") || "20"),
@@ -54,7 +50,9 @@ export async function GET(request: NextRequest) {
     // Build query
     let query = supabase
       .from("invoices")
-      .select("*,client:clients(name,email),branch:branches(name)", { count: "exact" })
+      .select("*,client:clients(id,first_name,last_name,email),branch:branches(name)", {
+        count: "exact",
+      })
       .eq("organization_id", organizationId)
       .eq("is_deleted", false)
       .order("created_at", { ascending: false })
@@ -89,10 +87,7 @@ export async function GET(request: NextRequest) {
 
     if (error) {
       console.error("Database error:", error);
-      return NextResponse.json(
-        { error: "Failed to fetch invoices" },
-        { status: 500 }
-      );
+      return NextResponse.json({ error: "Failed to fetch invoices" }, { status: 500 });
     }
 
     return NextResponse.json({
@@ -112,10 +107,7 @@ export async function GET(request: NextRequest) {
     }
 
     console.error("Unexpected error:", error);
-    return NextResponse.json(
-      { error: "Internal server error" },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }
 
@@ -129,10 +121,7 @@ export async function POST(request: NextRequest) {
     } = await supabase.auth.getUser();
 
     if (!user) {
-      return NextResponse.json(
-        { error: "Unauthorized" },
-        { status: 401 }
-      );
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
     // Get user's organization
@@ -143,10 +132,7 @@ export async function POST(request: NextRequest) {
       .single();
 
     if (!userData) {
-      return NextResponse.json(
-        { error: "User not found" },
-        { status: 404 }
-      );
+      return NextResponse.json({ error: "User not found" }, { status: 404 });
     }
 
     const organizationId = userData.organization_id;
@@ -166,10 +152,7 @@ export async function POST(request: NextRequest) {
       .single();
 
     if (!client) {
-      return NextResponse.json(
-        { error: "Client not found or access denied" },
-        { status: 404 }
-      );
+      return NextResponse.json({ error: "Client not found or access denied" }, { status: 404 });
     }
 
     // Generate invoice number
@@ -215,10 +198,7 @@ export async function POST(request: NextRequest) {
 
     if (invoiceError) {
       console.error("Failed to create invoice:", invoiceError);
-      return NextResponse.json(
-        { error: "Failed to create invoice" },
-        { status: 500 }
-      );
+      return NextResponse.json({ error: "Failed to create invoice" }, { status: 500 });
     }
 
     // Create invoice items
@@ -249,10 +229,11 @@ export async function POST(request: NextRequest) {
     await supabase.from("audit_logs").insert({
       organization_id: organizationId,
       user_id: user.id,
+      event_type: "CREATE",
       resource_type: "invoices",
       resource_id: invoice.id,
-      action: "create",
-      changes: invoice,
+      action: "created",
+      changes: { new_values: invoice },
     });
 
     // Auto-generate notification for invoice creation
@@ -270,11 +251,11 @@ export async function POST(request: NextRequest) {
           user_id: client.user_id,
           notification_type: "invoice_generated",
           title: "Invoice Generated",
-          message: `Invoice #${invoice.invoice_number} has been created for €${(invoice.total_amount).toFixed(2)}.`,
+          message: `Invoice #${invoice.invoice_number} has been created for €${invoice.total_amount.toFixed(2)}.`,
           action_url: `/admin/billing/invoices/${invoice.id}`,
           entity_type: "invoices",
           entity_id: invoice.id,
-          metadata: { amount: invoice.total_amount, status: invoice.status }
+          metadata: { amount: invoice.total_amount, status: invoice.status },
         });
       }
     } catch (notificationError) {
@@ -292,9 +273,6 @@ export async function POST(request: NextRequest) {
     }
 
     console.error("Unexpected error:", error);
-    return NextResponse.json(
-      { error: "Internal server error" },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }

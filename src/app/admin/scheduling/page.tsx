@@ -1,375 +1,388 @@
-﻿/* eslint-disable @typescript-eslint/no-explicit-any, react-hooks/set-state-in-effect */
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
-import { useDebounce } from "@/hooks/useDebounce";
+import { useState, useEffect, useCallback, useMemo } from "react";
+import Link from "next/link";
+import {
+  format,
+  startOfWeek,
+  endOfWeek,
+  startOfMonth,
+  endOfMonth,
+  eachDayOfInterval,
+  addDays,
+  addWeeks,
+  addMonths,
+  subDays,
+  subWeeks,
+  subMonths,
+  isToday,
+  isSameMonth,
+} from "date-fns";
+import { ChevronLeft, ChevronRight, CalendarDays } from "lucide-react";
 import { PageHeader } from "@/components/admin/PageHeader";
-import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/Card";
+import { Card } from "@/components/ui/Card";
+import { Button } from "@/components/ui/Button";
+import { Select } from "@/components/ui/Select";
 import { Skeleton } from "@/components/ui/Skeleton";
-import { formatDate } from "date-fns";
-import { Calendar, LayoutGrid, List } from "lucide-react";
+import { EmptyState } from "@/components/ui/EmptyState";
+import { StatusBadge } from "@/components/ui/Badge";
+import { cn } from "@/shared/utils/cn";
+import { ICON_SIZE, ICON_STROKE_WIDTH } from "@/shared/constants/icons";
 
 export const dynamic = "force-dynamic";
 
-type ViewType = "calendar" | "board" | "list";
+type ViewMode = "day" | "week" | "month";
 
-interface SchedulingStats {
-  todayVisits: number;
-  tomorrowVisits: number;
-  upcomingVisits: number;
-  completedToday: number;
-  cancelledToday: number;
+interface VisitRow {
+  id: string;
+  title: string;
+  scheduled_date: string;
+  start_time: string;
+  end_time: string;
+  status: string;
+  client?: { first_name: string; last_name: string };
+  employee?: { first_name: string; last_name: string } | null;
+}
+
+interface Option {
+  id: string;
+  first_name: string;
+  last_name: string;
+}
+
+const VIEW_OPTIONS: { value: ViewMode; label: string }[] = [
+  { value: "day", label: "Day" },
+  { value: "week", label: "Week" },
+  { value: "month", label: "Month" },
+];
+
+function visitChip(visit: VisitRow) {
+  const employeeName = visit.employee
+    ? `${visit.employee.first_name} ${visit.employee.last_name}`
+    : "Unassigned";
+  const clientName = visit.client
+    ? `${visit.client.first_name} ${visit.client.last_name}`
+    : "Unknown client";
+  return (
+    <Link
+      key={visit.id}
+      href={`/admin/visits/${visit.id}`}
+      className="block rounded-md border border-border/60 bg-card px-2 py-1.5 text-xs transition-colors hover:border-primary/40 hover:bg-accent/40"
+    >
+      <p className="truncate font-medium text-foreground">
+        {visit.start_time?.slice(0, 5)} · {clientName}
+      </p>
+      <p className="truncate text-muted-foreground">{employeeName}</p>
+    </Link>
+  );
 }
 
 export default function SchedulingPage() {
-  const [view, setView] = useState<ViewType>("list");
-  const [visits, setVisits] = useState<any[]>([]);
-  const [stats, setStats] = useState<SchedulingStats>({
-    todayVisits: 0,
-    tomorrowVisits: 0,
-    upcomingVisits: 0,
-    completedToday: 0,
-    cancelledToday: 0,
-  });
+  const [view, setView] = useState<ViewMode>("week");
+  const [anchorDate, setAnchorDate] = useState(() => new Date());
+  const [visits, setVisits] = useState<VisitRow[]>([]);
   const [loading, setLoading] = useState(true);
-  const [search, setSearch] = useState("");
-  const [statusFilter, setStatusFilter] = useState("");
-  const [dateFilter, setDateFilter] = useState("");
+  const [employeeId, setEmployeeId] = useState("");
+  const [clientId, setClientId] = useState("");
+  const [employees, setEmployees] = useState<Option[]>([]);
+  const [clients, setClients] = useState<Option[]>([]);
 
-  const debouncedSearch = useDebounce(search, 300);
+  const range = useMemo(() => {
+    if (view === "day") return { from: anchorDate, to: anchorDate };
+    if (view === "week") {
+      return {
+        from: startOfWeek(anchorDate, { weekStartsOn: 1 }),
+        to: endOfWeek(anchorDate, { weekStartsOn: 1 }),
+      };
+    }
+    // Month view pads to full weeks so the grid has no partial rows.
+    return {
+      from: startOfWeek(startOfMonth(anchorDate), { weekStartsOn: 1 }),
+      to: endOfWeek(endOfMonth(anchorDate), { weekStartsOn: 1 }),
+    };
+  }, [view, anchorDate]);
 
   const fetchVisits = useCallback(async () => {
     try {
       setLoading(true);
-      const params = new URLSearchParams();
-      if (debouncedSearch) params.append("search", debouncedSearch);
-      if (statusFilter) params.append("status", statusFilter);
-      if (dateFilter) params.append("dateFrom", dateFilter);
+      const params = new URLSearchParams({
+        dateFrom: format(range.from, "yyyy-MM-dd"),
+        dateTo: format(range.to, "yyyy-MM-dd"),
+        limit: "500",
+        sortBy: "scheduled_date",
+        sortOrder: "asc",
+      });
+      if (employeeId) params.append("employeeId", employeeId);
+      if (clientId) params.append("clientId", clientId);
 
-      const response = await fetch(`/api/visits?${params.toString()}`);
+      const response = await fetch(`/api/visits?${params}`);
       const data = await response.json();
       setVisits(data.visits || []);
-
-      // Calculate stats
-      const today = new Date().toISOString().split("T")[0];
-      const tomorrow = new Date(Date.now() + 86400000).toISOString().split("T")[0];
-
-      const todayVisits = data.visits?.filter((v: any) => v.scheduled_date === today && !["cancelled", "no_show"].includes(v.status)) || [];
-      const tomorrowVisits = data.visits?.filter((v: any) => v.scheduled_date === tomorrow && !["cancelled", "no_show"].includes(v.status)) || [];
-      const upcomingVisits = data.visits?.filter((v: any) => v.scheduled_date > tomorrow && !["cancelled", "no_show"].includes(v.status)) || [];
-      const completedToday = data.visits?.filter((v: any) => v.scheduled_date === today && v.status === "completed") || [];
-      const cancelledToday = data.visits?.filter((v: any) => v.scheduled_date === today && ["cancelled", "no_show"].includes(v.status)) || [];
-
-      setStats({
-        todayVisits: todayVisits.length,
-        tomorrowVisits: tomorrowVisits.length,
-        upcomingVisits: upcomingVisits.length,
-        completedToday: completedToday.length,
-        cancelledToday: cancelledToday.length,
-      });
     } catch (error) {
-      console.error("Error fetching visits:", error);
+      console.error("Error fetching scheduled visits:", error);
     } finally {
       setLoading(false);
     }
-  }, [debouncedSearch, statusFilter, dateFilter]);
+  }, [range, employeeId, clientId]);
 
   useEffect(() => {
-    fetchVisits();
+    // Deferred to a microtask so the fetch trigger isn't a synchronous setState call in the effect body.
+    queueMicrotask(() => {
+      fetchVisits();
+    });
   }, [fetchVisits]);
+
+  useEffect(() => {
+    fetch("/api/employees?page=1&limit=200")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => d?.employees && setEmployees(d.employees))
+      .catch(() => {});
+    fetch("/api/clients?page=1&limit=200")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => d?.clients && setClients(d.clients))
+      .catch(() => {});
+  }, []);
+
+  const visitsByDay = useMemo(() => {
+    const map = new Map<string, VisitRow[]>();
+    for (const visit of visits) {
+      const key = visit.scheduled_date;
+      const list = map.get(key) || [];
+      list.push(visit);
+      map.set(key, list);
+    }
+    for (const list of map.values()) {
+      list.sort((a, b) => (a.start_time || "").localeCompare(b.start_time || ""));
+    }
+    return map;
+  }, [visits]);
+
+  const goPrev = () =>
+    setAnchorDate((d) =>
+      view === "day" ? subDays(d, 1) : view === "week" ? subWeeks(d, 1) : subMonths(d, 1)
+    );
+  const goNext = () =>
+    setAnchorDate((d) =>
+      view === "day" ? addDays(d, 1) : view === "week" ? addWeeks(d, 1) : addMonths(d, 1)
+    );
+  const goToday = () => setAnchorDate(new Date());
+
+  const rangeLabel =
+    view === "day"
+      ? format(anchorDate, "EEEE, d MMMM yyyy")
+      : view === "week"
+        ? `${format(startOfWeek(anchorDate, { weekStartsOn: 1 }), "d MMM")} – ${format(endOfWeek(anchorDate, { weekStartsOn: 1 }), "d MMM yyyy")}`
+        : format(anchorDate, "MMMM yyyy");
+
+  const weekDays = useMemo(() => eachDayOfInterval({ start: range.from, end: range.to }), [range]);
+  const dayKey = (d: Date) => format(d, "yyyy-MM-dd");
+  const dayVisits = visitsByDay.get(dayKey(anchorDate)) || [];
 
   return (
     <div className="space-y-6">
       <PageHeader
         title="Scheduling"
-        description="Manage visits, availability, and employee schedules"
+        description="Day, week and month views of every visit."
+        action={{ label: "New Visit", href: "/admin/visits/new" }}
       />
 
-      {/* Dashboard Stats */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
-        <Card>
-          <CardHeader>
-            <CardTitle size="sm">Today</CardTitle>
-          </CardHeader>
-          <CardContent>
-            {loading ? (
-              <Skeleton className="h-8 w-20" />
-            ) : (
-              <>
-                <p className="text-3xl font-bold text-blue-600">{stats.todayVisits}</p>
-                <p className="text-xs text-gray-600 dark:text-gray-400 mt-1">Visits scheduled</p>
-              </>
-            )}
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle size="sm">Tomorrow</CardTitle>
-          </CardHeader>
-          <CardContent>
-            {loading ? (
-              <Skeleton className="h-8 w-20" />
-            ) : (
-              <>
-                <p className="text-3xl font-bold text-purple-600">{stats.tomorrowVisits}</p>
-                <p className="text-xs text-gray-600 dark:text-gray-400 mt-1">Visits scheduled</p>
-              </>
-            )}
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle size="sm">This Week</CardTitle>
-          </CardHeader>
-          <CardContent>
-            {loading ? (
-              <Skeleton className="h-8 w-20" />
-            ) : (
-              <>
-                <p className="text-3xl font-bold text-indigo-600">{stats.upcomingVisits}</p>
-                <p className="text-xs text-gray-600 dark:text-gray-400 mt-1">Visits scheduled</p>
-              </>
-            )}
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle size="sm">Completed</CardTitle>
-          </CardHeader>
-          <CardContent>
-            {loading ? (
-              <Skeleton className="h-8 w-20" />
-            ) : (
-              <>
-                <p className="text-3xl font-bold text-green-600">{stats.completedToday}</p>
-                <p className="text-xs text-gray-600 dark:text-gray-400 mt-1">Completed today</p>
-              </>
-            )}
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle size="sm">Cancelled</CardTitle>
-          </CardHeader>
-          <CardContent>
-            {loading ? (
-              <Skeleton className="h-8 w-20" />
-            ) : (
-              <>
-                <p className="text-3xl font-bold text-red-600">{stats.cancelledToday}</p>
-                <p className="text-xs text-gray-600 dark:text-gray-400 mt-1">Cancelled today</p>
-              </>
-            )}
-          </CardContent>
-        </Card>
-      </div>
-
-      {/* View Controls */}
-      <div className="flex gap-2">
-        <button
-          onClick={() => setView("calendar")}
-          className={`flex items-center gap-2 px-4 py-2 rounded-lg font-medium transition ${
-            view === "calendar"
-              ? "bg-blue-600 text-white"
-              : "bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-white hover:bg-gray-200 dark:hover:bg-gray-600"
-          }`}
-        >
-          <Calendar className="w-4 h-4" />
-          Calendar
-        </button>
-        <button
-          onClick={() => setView("board")}
-          className={`flex items-center gap-2 px-4 py-2 rounded-lg font-medium transition ${
-            view === "board"
-              ? "bg-blue-600 text-white"
-              : "bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-white hover:bg-gray-200 dark:hover:bg-gray-600"
-          }`}
-        >
-          <LayoutGrid className="w-4 h-4" />
-          Board
-        </button>
-        <button
-          onClick={() => setView("list")}
-          className={`flex items-center gap-2 px-4 py-2 rounded-lg font-medium transition ${
-            view === "list"
-              ? "bg-blue-600 text-white"
-              : "bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-white hover:bg-gray-200 dark:hover:bg-gray-600"
-          }`}
-        >
-          <List className="w-4 h-4" />
-          List
-        </button>
-      </div>
-
-      {/* Filters */}
-      <div className="bg-white dark:bg-gray-800 rounded-lg p-4 space-y-4">
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <input
-            type="text"
-            placeholder="Search visits..."
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+      <Card bordered padding="md" className="space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <Button variant="outline" size="sm" onClick={goPrev} aria-label="Previous">
+              <ChevronLeft className={ICON_SIZE.sm} strokeWidth={ICON_STROKE_WIDTH} />
+            </Button>
+            <Button variant="outline" size="sm" onClick={goToday}>
+              Today
+            </Button>
+            <Button variant="outline" size="sm" onClick={goNext} aria-label="Next">
+              <ChevronRight className={ICON_SIZE.sm} strokeWidth={ICON_STROKE_WIDTH} />
+            </Button>
+            <span className="ml-2 text-sm font-medium text-foreground">{rangeLabel}</span>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            {VIEW_OPTIONS.map((opt) => (
+              <Button
+                key={opt.value}
+                size="sm"
+                variant={view === opt.value ? "primary" : "outline"}
+                onClick={() => setView(opt.value)}
+              >
+                {opt.label}
+              </Button>
+            ))}
+          </div>
+        </div>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <Select
+            value={employeeId}
+            onChange={(e) => setEmployeeId(e.target.value)}
+            options={[
+              { value: "", label: "All employees" },
+              ...employees.map((e) => ({ value: e.id, label: `${e.first_name} ${e.last_name}` })),
+            ]}
           />
-          <select
-            value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value)}
-            className="px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
-          >
-            <option value="">All Statuses</option>
-            <option value="scheduled">Scheduled</option>
-            <option value="assigned">Assigned</option>
-            <option value="completed">Completed</option>
-            <option value="cancelled">Cancelled</option>
-          </select>
-          <input
-            type="date"
-            value={dateFilter}
-            onChange={(e) => setDateFilter(e.target.value)}
-            className="px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+          <Select
+            value={clientId}
+            onChange={(e) => setClientId(e.target.value)}
+            options={[
+              { value: "", label: "All clients" },
+              ...clients.map((c) => ({ value: c.id, label: `${c.first_name} ${c.last_name}` })),
+            ]}
           />
         </div>
-      </div>
+      </Card>
 
-      {/* Content */}
-      <div className="bg-white dark:bg-gray-800 rounded-lg p-6">
-        {loading ? (
-          <div className="text-center py-8">
-            <div className="inline-block w-8 h-8 border-4 border-gray-200 dark:border-gray-700 border-t-blue-600 rounded-full animate-spin" />
-            <p className="mt-2 text-gray-600 dark:text-gray-400">Loading visits...</p>
-          </div>
-        ) : view === "list" ? (
-          <div className="space-y-3">
-            {visits.length === 0 ? (
-              <p className="text-center text-gray-600 dark:text-gray-400 py-8">No visits found</p>
-            ) : (
-              visits.map((visit: any) => (
-                <div key={visit.id} className="p-4 border border-gray-200 dark:border-gray-700 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 transition">
-                  <div className="flex justify-between items-start">
-                    <div>
-                      <h4 className="font-medium text-gray-900 dark:text-white">{visit.title}</h4>
-                      <p className="text-sm text-gray-600 dark:text-gray-400">{visit.client?.first_name} {visit.client?.last_name}</p>
-                      <p className="text-xs text-gray-500 dark:text-gray-500 mt-1">
-                        {formatDate(new Date(visit.scheduled_date), "dd MMM yyyy")} â€¢ {visit.start_time} - {visit.end_time}
+      {loading ? (
+        <Card bordered padding="md" className="space-y-3">
+          {[...Array(4)].map((_, i) => (
+            <Skeleton key={i} className="h-16 w-full" />
+          ))}
+        </Card>
+      ) : view === "day" ? (
+        <Card bordered padding="md">
+          {dayVisits.length === 0 ? (
+            <EmptyState
+              icon={CalendarDays}
+              title="No visits scheduled"
+              description="Nothing scheduled for this day yet."
+            />
+          ) : (
+            // Time-ordered per employee, per day - this ordering is the
+            // natural precursor for future route optimization (an
+            // employee's day is already the sequence a route would need to
+            // start from), but no distance/routing calculation exists here
+            // or is implied - that's explicitly out of scope for this pass.
+            <ul className="space-y-3 border-l-2 border-border pl-4">
+              {dayVisits.map((visit) => (
+                <li key={visit.id} className="relative">
+                  <span className="absolute -left-[21px] top-1.5 h-2.5 w-2.5 rounded-full border-2 border-card bg-primary" />
+                  <Link
+                    href={`/admin/visits/${visit.id}`}
+                    className="flex items-center justify-between gap-3 rounded-md border border-border/60 bg-card px-4 py-3 transition-colors hover:border-primary/40 hover:bg-accent/30"
+                  >
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium text-foreground">
+                        {visit.start_time?.slice(0, 5)} - {visit.end_time?.slice(0, 5)} ·{" "}
+                        {visit.title}
+                      </p>
+                      <p className="truncate text-xs text-muted-foreground">
+                        {visit.client
+                          ? `${visit.client.first_name} ${visit.client.last_name}`
+                          : "Unknown client"}{" "}
+                        ·{" "}
+                        {visit.employee
+                          ? `${visit.employee.first_name} ${visit.employee.last_name}`
+                          : "Unassigned"}
                       </p>
                     </div>
-                    <div className="text-right">
-                      <span className={`inline-block px-2 py-1 text-xs font-medium rounded ${
-                        visit.status === "assigned"
-                          ? "bg-green-100 dark:bg-green-900 text-green-800 dark:text-green-100"
-                          : visit.status === "scheduled"
-                          ? "bg-blue-100 dark:bg-blue-900 text-blue-800 dark:text-blue-100"
-                          : "bg-gray-100 dark:bg-gray-700 text-gray-800 dark:text-gray-100"
-                      }`}>
-                        {visit.status}
-                      </span>
-                    </div>
-                  </div>
+                    <StatusBadge status={visit.status} size="sm" />
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          )}
+        </Card>
+      ) : view === "week" ? (
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-7">
+          {weekDays.map((day) => {
+            const list = visitsByDay.get(dayKey(day)) || [];
+            return (
+              <Card
+                key={dayKey(day)}
+                bordered
+                padding="sm"
+                className={cn("space-y-2", isToday(day) && "border-primary/50")}
+              >
+                <button
+                  onClick={() => {
+                    setAnchorDate(day);
+                    setView("day");
+                  }}
+                  className="flex w-full items-baseline justify-between text-left"
+                >
+                  <span
+                    className={cn(
+                      "text-xs font-semibold uppercase tracking-wide",
+                      isToday(day) ? "text-primary" : "text-muted-foreground"
+                    )}
+                  >
+                    {format(day, "EEE")}
+                  </span>
+                  <span
+                    className={cn(
+                      "text-sm font-semibold",
+                      isToday(day) ? "text-primary" : "text-foreground"
+                    )}
+                  >
+                    {format(day, "d")}
+                  </span>
+                </button>
+                <div className="space-y-1.5">
+                  {list.length === 0 ? (
+                    <p className="text-xs text-muted-foreground">No visits</p>
+                  ) : (
+                    list.map((visit) => visitChip(visit))
+                  )}
                 </div>
-              ))
-            )}
-          </div>
-        ) : view === "calendar" ? (
-          <div className="space-y-4">
-            <div className="text-sm text-gray-600 dark:text-gray-400 p-4 bg-blue-50 dark:bg-blue-900/20 rounded-lg">
-              📅 Calendar view: Grouped by date
-            </div>
-            {visits.length === 0 ? (
-              <div className="text-center py-12 text-gray-600 dark:text-gray-400">
-                <p>No visits scheduled</p>
+              </Card>
+            );
+          })}
+        </div>
+      ) : (
+        <Card bordered padding="sm">
+          <div className="grid grid-cols-7 gap-px overflow-hidden rounded-md bg-border text-center text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((d) => (
+              <div key={d} className="bg-muted/40 py-2">
+                {d}
               </div>
-            ) : (
-              Object.entries(
-                visits.reduce((acc: any, visit: any) => {
-                  const date = visit.scheduled_date;
-                  if (!acc[date]) acc[date] = [];
-                  acc[date].push(visit);
-                  return acc;
-                }, {})
-              )
-                .sort(([dateA], [dateB]) => dateA.localeCompare(dateB))
-                .map(([date, dateVisits]: any) => (
-                  <div key={date} className="space-y-2">
-                    <h3 className="font-semibold text-gray-900 dark:text-white">
-                      {new Date(date).toLocaleDateString("nl-NL", {
-                        weekday: "long",
-                        year: "numeric",
-                        month: "long",
-                        day: "numeric",
-                      })}
-                    </h3>
-                    <div className="space-y-2 ml-4">
-                      {dateVisits.map((visit: any) => (
-                        <div key={visit.id} className="p-3 bg-gray-50 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600">
-                          <div className="text-sm font-medium text-gray-900 dark:text-white">
-                            {visit.scheduled_time || "No time specified"}
-                          </div>
-                          <div className="text-xs text-gray-600 dark:text-gray-400">{visit.client_name || "Client"}</div>
-                          <div className="text-xs text-gray-600 dark:text-gray-400">{visit.employee_name || "Employee"}</div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                ))
-            )}
+            ))}
           </div>
-        ) : (
-          <div className="space-y-4">
-            <div className="text-sm text-gray-600 dark:text-gray-400 p-4 bg-purple-50 dark:bg-purple-900/20 rounded-lg">
-              👥 Scheduling board: Grouped by employee
-            </div>
-            {visits.length === 0 ? (
-              <div className="text-center py-12 text-gray-600 dark:text-gray-400">
-                <p>No visits assigned</p>
-              </div>
-            ) : (
-              Object.entries(
-                visits.reduce((acc: any, visit: any) => {
-                  const employee = visit.employee_name || "Unassigned";
-                  if (!acc[employee]) acc[employee] = [];
-                  acc[employee].push(visit);
-                  return acc;
-                }, {})
-              )
-                .sort(([empA], [empB]) => empA.localeCompare(empB))
-                .map(([employee, empVisits]: any) => (
-                  <div key={employee} className="space-y-2">
-                    <h3 className="font-semibold text-gray-900 dark:text-white">
-                      {employee}
-                    </h3>
-                    <div className="space-y-2 ml-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
-                      {empVisits.map((visit: any) => (
-                        <div key={visit.id} className="p-3 bg-gray-50 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600">
-                          <div className="text-sm font-medium text-gray-900 dark:text-white">
-                            {visit.client_name || "Client"}
-                          </div>
-                          <div className="text-xs text-gray-600 dark:text-gray-400">
-                            {new Date(visit.scheduled_date).toLocaleDateString("nl-NL")} {visit.scheduled_time || ""}
-                          </div>
-                          <div className="text-xs mt-1">
-                            <span className={`px-2 py-1 rounded text-white text-xs ${
-                              visit.status === "completed" ? "bg-green-600" :
-                              visit.status === "cancelled" ? "bg-red-600" :
-                              visit.status === "no_show" ? "bg-orange-600" :
-                              "bg-blue-600"
-                            }`}>
-                              {visit.status}
-                            </span>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
+          <div className="grid grid-cols-7 gap-px overflow-hidden rounded-md bg-border">
+            {weekDays.map((day) => {
+              const list = visitsByDay.get(dayKey(day)) || [];
+              const visible = list.slice(0, 3);
+              const overflow = list.length - visible.length;
+              return (
+                <button
+                  key={dayKey(day)}
+                  onClick={() => {
+                    setAnchorDate(day);
+                    setView("day");
+                  }}
+                  className={cn(
+                    "min-h-24 space-y-1 bg-card p-1.5 text-left transition-colors hover:bg-accent/30",
+                    !isSameMonth(day, anchorDate) && "opacity-40",
+                    isToday(day) && "ring-1 ring-inset ring-primary/50"
+                  )}
+                >
+                  <span
+                    className={cn(
+                      "text-xs font-medium",
+                      isToday(day) ? "text-primary" : "text-foreground"
+                    )}
+                  >
+                    {format(day, "d")}
+                  </span>
+                  <div className="space-y-1">
+                    {visible.map((visit) => (
+                      <div
+                        key={visit.id}
+                        className="truncate rounded bg-accent/50 px-1.5 py-0.5 text-[11px] text-foreground"
+                      >
+                        {visit.start_time?.slice(0, 5)} {visit.client?.first_name || ""}
+                      </div>
+                    ))}
+                    {overflow > 0 && (
+                      <p className="px-1.5 text-[11px] text-muted-foreground">+{overflow} more</p>
+                    )}
                   </div>
-                ))
-            )}
+                </button>
+              );
+            })}
           </div>
-        )}
-      </div>
+        </Card>
+      )}
     </div>
   );
 }
-

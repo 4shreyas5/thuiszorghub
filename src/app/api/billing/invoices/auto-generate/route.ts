@@ -3,6 +3,13 @@ import { NextRequest, NextResponse } from "next/server";
 import { BillingEngine } from "@/core/billing/billing-engine";
 import { getBillingPeriod } from "@/utils/date-utils";
 
+interface CompletedVisit {
+  id: unknown;
+  scheduled_visit_id: unknown;
+  completed_at: unknown;
+  scheduled_visits: unknown;
+}
+
 export async function POST(request: NextRequest) {
   try {
     const supabase = await createServerClient();
@@ -68,38 +75,46 @@ export async function POST(request: NextRequest) {
 
     if (visitsError) {
       console.error("Error fetching visits:", visitsError);
-      return NextResponse.json(
-        { error: "Failed to fetch visits" },
-        { status: 500 }
-      );
+      return NextResponse.json({ error: "Failed to fetch visits" }, { status: 500 });
     }
 
     // Group visits by client and branch
     const groupedVisits: Record<
       string,
-      { clientId: string; branchId: string; visits: any[] }
+      { clientId: string; branchId: string; visits: CompletedVisit[] }
     > = {};
 
     (completedVisits || []).forEach((visit) => {
-      const scheduled = (visit as any).scheduled_visits;
-      const key = `${scheduled.client_id}-${scheduled.branch_id}`;
+      const scheduled = (visit as Record<string, unknown>).scheduled_visits as Record<
+        string,
+        unknown
+      >;
+      if (!scheduled) {
+        return;
+      }
+      const clientId = String(scheduled.client_id);
+      const branchId = String(scheduled.branch_id);
+      if (!clientId || clientId === "undefined" || !branchId || branchId === "undefined") {
+        return;
+      }
+      const key = `${clientId}-${branchId}`;
 
       if (!groupedVisits[key]) {
         groupedVisits[key] = {
-          clientId: scheduled.client_id,
-          branchId: scheduled.branch_id,
+          clientId,
+          branchId,
           visits: [],
         };
       }
 
-      groupedVisits[key].visits.push(visit);
+      groupedVisits[key].visits.push(visit as CompletedVisit);
     });
 
     const generatedInvoices: string[] = [];
     const errors: { clientId: string; error: string }[] = [];
 
     // Generate invoices for each client-branch combination
-    for (const [_key, group] of Object.entries(groupedVisits)) {
+    for (const [, group] of Object.entries(groupedVisits)) {
       try {
         const invoiceId = await billingEngine.generateInvoiceDraft(
           organizationId,
@@ -131,9 +146,6 @@ export async function POST(request: NextRequest) {
     });
   } catch (error) {
     console.error("Unexpected error:", error);
-    return NextResponse.json(
-      { error: "Internal server error" },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }

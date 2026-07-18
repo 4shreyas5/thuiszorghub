@@ -68,4 +68,5 @@ export interface IdentityContext {
   error: AuthError | null;
   isLoading: boolean;
   isAuthenticated: boolean;
+  refreshUser: () => Promise<void>;
 }

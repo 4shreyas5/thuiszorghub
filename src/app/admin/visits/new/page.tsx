@@ -5,13 +5,13 @@ import { useRouter } from "next/navigation";
 import { PageHeader } from "@/components/admin/PageHeader";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/Card";
 import { VisitForm } from "@/components/admin/VisitForm";
-import { CreateVisitPayload } from "@/types/visit";
+import { CreateVisitPayload, UpdateVisitPayload } from "@/types/visit";
 
 export default function NewVisitPage() {
   const router = useRouter();
   const [error, setError] = useState<string | null>(null);
 
-  const handleSubmit = async (data: CreateVisitPayload) => {
+  const handleSubmit = async (data: CreateVisitPayload | UpdateVisitPayload) => {
     try {
       const response = await fetch("/api/visits", {
         method: "POST",
@@ -35,13 +35,10 @@ export default function NewVisitPage() {
 
   return (
     <div className="space-y-6">
-      <PageHeader
-        title="Create Visit"
-        description="Schedule a new care visit"
-      />
+      <PageHeader title="Create Visit" description="Schedule a new care visit" />
 
       {error && (
-        <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-4 text-red-700 dark:text-red-400">
+        <div className="rounded-md border border-danger/30 bg-danger/10 p-4 text-sm text-danger">
           {error}
         </div>
       )}

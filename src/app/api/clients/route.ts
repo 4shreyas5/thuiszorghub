@@ -1,16 +1,41 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { createServerClient } from "@/core/database/server";
 import { NextRequest, NextResponse } from "next/server";
+import { createClientSchema } from "@/core/validation/client";
+
+const VALID_STATUSES = ["active", "inactive", "archived"];
 
 export async function GET(request: NextRequest) {
   try {
     const supabase = await createServerClient();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+
+    if (!user) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    const { data: userData } = await supabase
+      .from("users")
+      .select("organization_id")
+      .eq("id", user.id)
+      .single();
+
+    if (!userData || !userData.organization_id) {
+      return NextResponse.json(
+        { error: "User not found or not assigned to organization" },
+        { status: 404 }
+      );
+    }
+
     const searchParams = request.nextUrl.searchParams;
 
     const page = parseInt(searchParams.get("page") || "1");
     const limit = parseInt(searchParams.get("limit") || "20");
     const search = searchParams.get("search") || "";
-    const status = searchParams.get("status") || ""; // all, active, archived
+    // active | inactive | archived | all | "" (default: everything but archived)
+    const status = searchParams.get("status") || "";
     const caseStatus = searchParams.get("caseStatus") || "";
     const branch = searchParams.get("branch") || "";
     const sortBy = searchParams.get("sortBy") || "created_at";
@@ -18,41 +43,49 @@ export async function GET(request: NextRequest) {
 
     const offset = (page - 1) * limit;
 
-    let query = (supabase.from("clients") as any)
-      .select(`*,
+    // Shared filter application so the data query and the count query can
+    // never drift apart (previously the count query ignored every filter,
+    // so pagination.total didn't match the filtered results).
+    const applyFilters = (q: any) => {
+      q = q.eq("organization_id", userData.organization_id);
+
+      if (search) {
+        q = q.or(
+          `first_name.ilike.%${search}%,last_name.ilike.%${search}%,email.ilike.%${search}%,phone.ilike.%${search}%`
+        );
+      }
+      if (branch) {
+        q = q.eq("branch_id", branch);
+      }
+      if (caseStatus) {
+        q = q.eq("case_status", caseStatus);
+      }
+      if (VALID_STATUSES.includes(status)) {
+        q = q.eq("status", status);
+      } else if (status !== "all") {
+        q = q.neq("status", "archived");
+      }
+      return q;
+    };
+
+    // No address join here - the list doesn't display it, only the detail
+    // page needs it. Assignments joined so "Assigned Employee(s)" doesn't
+    // need a per-row fetch.
+    const query = applyFilters(
+      (supabase.from("clients") as any).select(
+        `*,
         branch:branches(id, name),
-        address:client_addresses(id, address_line_1, city, postal_code, is_primary)
-      `)
-      .eq("is_deleted", false)
-      .order(sortBy, { ascending: sortOrder === "asc" });
-
-    if (search) {
-      query = query.or(
-        `first_name.ilike.%${search}%,last_name.ilike.%${search}%,email.ilike.%${search}%,phone.ilike.%${search}%`
-      );
-    }
-
-    if (status === "active") {
-      query = query.eq("is_active", true);
-    } else if (status === "archived") {
-      query = query.eq("is_active", false);
-    }
-
-    if (caseStatus) {
-      query = query.eq("case_status", caseStatus);
-    }
-
-    if (branch) {
-      query = query.eq("branch_id", branch);
-    }
+        assignments:employee_client_assignments(is_primary, employee:employees(first_name, last_name))`
+      )
+    ).order(sortBy, { ascending: sortOrder === "asc" });
 
     const { data: clients, error } = await query.range(offset, offset + limit - 1);
 
     if (error) throw error;
 
-    const { count } = await (supabase.from("clients") as any)
-      .select("*", { count: "exact", head: true })
-      .eq("is_deleted", false);
+    const { count } = await applyFilters(
+      (supabase.from("clients") as any).select("*", { count: "exact", head: true })
+    );
 
     return NextResponse.json({
       clients: clients || [],
@@ -73,38 +106,27 @@ export async function POST(request: NextRequest) {
   try {
     const supabase = await createServerClient();
     const body = await request.json();
+    const parsed = createClientSchema.safeParse(body);
 
-    const {
-      first_name,
-      last_name,
-      date_of_birth,
-      email,
-      phone,
-      branch_id,
-      case_status,
-      risk_level,
-      emergency_contact_name,
-      emergency_contact_phone,
-      notes,
-      address_line_1,
-      address_line_2,
-      postal_code,
-      city,
-      country,
-      insurance_provider,
-      policy_number,
-    } = body;
-
-    if (!first_name || !last_name || !branch_id || !case_status) {
+    if (!parsed.success) {
+      const firstIssue = parsed.error.issues[0];
       return NextResponse.json(
-        { error: "Missing required fields" },
+        {
+          error: firstIssue?.message || "Invalid client data",
+          details: parsed.error.flatten().fieldErrors,
+        },
         { status: 400 }
       );
     }
 
+    const data = parsed.data;
+
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
     const { data: userData } = await (supabase.from("users") as any)
       .select("organization_id")
-      .eq("id", (await supabase.auth.getUser()).data.user?.id)
+      .eq("id", user?.id)
       .single();
 
     if (!userData) {
@@ -112,10 +134,10 @@ export async function POST(request: NextRequest) {
     }
 
     // Check for duplicate email if provided
-    if (email) {
+    if (data.email) {
       const { data: existing } = await (supabase.from("clients") as any)
         .select("id")
-        .eq("email", email)
+        .eq("email", data.email)
         .eq("organization_id", userData.organization_id)
         .eq("is_deleted", false);
 
@@ -131,17 +153,18 @@ export async function POST(request: NextRequest) {
     const { data: client, error: clientError } = await (supabase.from("clients") as any)
       .insert({
         organization_id: userData.organization_id,
-        branch_id,
-        first_name,
-        last_name,
-        date_of_birth,
-        email,
-        phone,
-        case_status,
-        risk_level,
-        emergency_contact_name,
-        emergency_contact_phone,
-        notes,
+        branch_id: data.branch_id,
+        first_name: data.first_name,
+        last_name: data.last_name,
+        date_of_birth: data.date_of_birth || null,
+        email: data.email || null,
+        phone: data.phone || null,
+        case_status: data.case_status,
+        risk_level: data.risk_level || null,
+        emergency_contact_name: data.emergency_contact_name || null,
+        emergency_contact_phone: data.emergency_contact_phone || null,
+        notes: data.notes || null,
+        status: "active",
         is_active: true,
       })
       .select()
@@ -150,32 +173,32 @@ export async function POST(request: NextRequest) {
     if (clientError) throw clientError;
 
     // Create address if provided
-    if (address_line_1 || postal_code || city) {
+    if (data.address_line_1 || data.postal_code || data.city) {
       await (supabase.from("client_addresses") as any).insert({
         client_id: client.id,
         address_type: "primary",
-        address_line_1: address_line_1 || "",
-        address_line_2,
-        postal_code: postal_code || "",
-        city: city || "",
-        country: country || "Netherlands",
+        address_line_1: data.address_line_1 || "",
+        address_line_2: data.address_line_2 || null,
+        postal_code: data.postal_code || "",
+        city: data.city || "",
+        country: data.country || "Netherlands",
         is_primary: true,
       });
     }
 
     // Create insurance info if provided
-    if (insurance_provider || policy_number) {
+    if (data.insurance_provider || data.policy_number) {
       await (supabase.from("client_insurance") as any).insert({
         client_id: client.id,
-        insurance_provider,
-        policy_number,
+        insurance_provider: data.insurance_provider || null,
+        policy_number: data.policy_number || null,
       });
     }
 
     // Log to audit logs
     await (supabase.from("audit_logs") as any).insert({
       organization_id: userData.organization_id,
-      user_id: (await supabase.auth.getUser()).data.user?.id,
+      user_id: user?.id,
       event_type: "CREATE",
       resource_type: "clients",
       resource_id: client.id,

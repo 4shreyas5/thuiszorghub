@@ -4,19 +4,22 @@ import { NextRequest, NextResponse } from "next/server";
 export async function GET(request: NextRequest) {
   try {
     const supabase = await createServerClient();
-    const { data: { user } } = await supabase.auth.getUser();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
 
     if (!user) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const { data: userData } = await supabase
+    const { data: userData, error: userError } = await supabase
       .from("users")
       .select("organization_id")
       .eq("id", user.id)
       .single();
 
-    if (!userData) {
+    if (userError || !userData) {
+      console.error("[roles GET] Error fetching user:", userError);
       return NextResponse.json({ error: "User not found" }, { status: 404 });
     }
 
@@ -26,7 +29,11 @@ export async function GET(request: NextRequest) {
     const offset = (page - 1) * limit;
 
     // Get roles with their permissions
-    const { data: roles, error: rolesError, count } = await supabase
+    const {
+      data: roles,
+      error: rolesError,
+      count,
+    } = await supabase
       .from("roles")
       .select(
         `
@@ -56,40 +63,37 @@ export async function GET(request: NextRequest) {
     });
   } catch (error) {
     console.error("Error fetching roles:", error);
-    return NextResponse.json(
-      { error: "Internal server error" },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }
 
 export async function POST(request: NextRequest) {
   try {
     const supabase = await createServerClient();
-    const { data: { user } } = await supabase.auth.getUser();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
 
     if (!user) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const { data: userData } = await supabase
+    const { data: userData, error: userError } = await supabase
       .from("users")
       .select("organization_id")
       .eq("id", user.id)
       .single();
 
-    if (!userData) {
+    if (userError || !userData) {
+      console.error("[roles POST] Error fetching user:", userError);
       return NextResponse.json({ error: "User not found" }, { status: 404 });
     }
 
     const body = await request.json();
-    const { name, description } = body;
+    const { name, description, permissionIds } = body;
 
     if (!name) {
-      return NextResponse.json(
-        { error: "Role name is required" },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: "Role name is required" }, { status: 400 });
     }
 
     const { data: role, error } = await supabase
@@ -105,12 +109,25 @@ export async function POST(request: NextRequest) {
 
     if (error) throw error;
 
+    if (Array.isArray(permissionIds) && permissionIds.length > 0) {
+      const { error: permError } = await supabase
+        .from("role_permissions")
+        .insert(
+          permissionIds.map((permissionId: string) => ({
+            role_id: role.id,
+            permission_id: permissionId,
+          }))
+        );
+      if (permError) console.error("[roles POST] Error assigning permissions:", permError);
+    }
+
     return NextResponse.json({ data: role }, { status: 201 });
   } catch (error) {
     console.error("Error creating role:", error);
-    return NextResponse.json(
-      { error: "Internal server error" },
-      { status: 500 }
-    );
+    const dbError = error as { code?: string };
+    if (dbError?.code === "23505") {
+      return NextResponse.json({ error: "A role with this name already exists" }, { status: 409 });
+    }
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }

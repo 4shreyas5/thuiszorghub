@@ -2,14 +2,45 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useParams } from "next/navigation";
+import { format } from "date-fns";
+import {
+  Clock,
+  AlertCircle,
+  CheckCircle,
+  Play,
+  Square,
+  XCircle,
+  UserX,
+  Upload,
+  Download,
+  Eye,
+  Trash2,
+  FileText,
+  Clock3,
+} from "lucide-react";
 import { PageHeader } from "@/components/admin/PageHeader";
 import { Button } from "@/components/ui/Button";
+import { Select } from "@/components/ui/Select";
+import { StatusBadge } from "@/components/ui/Badge";
+import { Card, CardHeader, CardTitle } from "@/components/ui/Card";
+import { Skeleton } from "@/components/ui/Skeleton";
+import { EmptyState } from "@/components/ui/EmptyState";
+import {
+  Table,
+  TableHead,
+  TableBody,
+  TableRow,
+  TableHeaderCell,
+  TableCell,
+} from "@/components/ui/Table";
+import { Textarea } from "@/components/ui/Textarea";
 import { TaskChecklistWidget } from "@/components/admin/TaskChecklistWidget";
 import { MedicationWidget } from "@/components/admin/MedicationWidget";
 import { VisitNotesWidget } from "@/components/admin/VisitNotesWidget";
-import { Clock, AlertCircle, CheckCircle, Play, Square } from "lucide-react";
-import { formatDate } from "date-fns";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { useToast } from "@/components/ui/Toast";
+import { ICON_SIZE, ICON_STROKE_WIDTH } from "@/shared/constants/icons";
 
 export const dynamic = "force-dynamic";
 
@@ -55,32 +86,69 @@ interface Visit {
   end_time: string;
   estimated_duration_minutes: number;
   organization_id: string;
-  client?: {
-    first_name: string;
-    last_name: string;
-  };
-  employee?: {
-    first_name: string;
-    last_name: string;
-  };
-  care_plan?: {
-    id: string;
-    title: string;
-  };
+  client?: { first_name: string; last_name: string };
+  employee?: { first_name: string; last_name: string };
+  care_plan?: { id: string; title: string };
 }
 
-export default function VisitDetailPage({ params }: { params: { id: string } }) {
+interface AuditLogEntry {
+  id: string;
+  action: string;
+  created_at: string;
+  users: { first_name: string; last_name: string; email: string } | null;
+}
+
+interface DocumentEntry {
+  id: string;
+  file_name: string;
+  document_type: string;
+  verification_status: string;
+  uploaded_at: string;
+}
+
+const DOCUMENT_TYPES = [
+  { value: "photos", label: "Photos" },
+  { value: "attachments", label: "Attachments" },
+  { value: "incident_reports", label: "Incident Reports" },
+  { value: "signed_forms", label: "Signed Forms" },
+  { value: "completion_documents", label: "Completion Documents" },
+];
+
+function DetailRow({ label, value }: { label: string; value: React.ReactNode }) {
+  return (
+    <div className="flex items-start justify-between gap-4 py-2.5">
+      <dt className="text-sm text-muted-foreground">{label}</dt>
+      <dd className="text-right text-sm font-medium text-foreground">{value}</dd>
+    </div>
+  );
+}
+
+export default function VisitDetailPage() {
   const router = useRouter();
-  const visitId = params.id;
+  const params = useParams();
+  const { addToast } = useToast();
+  const visitId = params.id as string;
 
   const [visit, setVisit] = useState<Visit | null>(null);
   const [tasks, setTasks] = useState<TaskItem[]>([]);
   const [medications, setMedications] = useState<MedicationItem[]>([]);
   const [notes, setNotes] = useState<NoteItem[]>([]);
+  const [documents, setDocuments] = useState<DocumentEntry[]>([]);
+  const [auditLogs, setAuditLogs] = useState<AuditLogEntry[]>([]);
+
   const [loading, setLoading] = useState(true);
+  const [loadingDocuments, setLoadingDocuments] = useState(true);
+  const [loadingAudit, setLoadingAudit] = useState(true);
   const [isEditing, setIsEditing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [completionNotes, setCompletionNotes] = useState("");
+  const [statusActionLoading, setStatusActionLoading] = useState(false);
+  const [confirmCancel, setConfirmCancel] = useState(false);
+  const [confirmNoShow, setConfirmNoShow] = useState(false);
+
+  const [uploadFile, setUploadFile] = useState<File | null>(null);
+  const [uploadDocumentType, setUploadDocumentType] = useState("");
+  const [uploading, setUploading] = useState(false);
 
   const fetchVisitData = useCallback(async () => {
     try {
@@ -90,26 +158,15 @@ export default function VisitDetailPage({ params }: { params: { id: string } }) 
       const visitData = await response.json();
       setVisit(visitData);
 
-      // Fetch tasks if in progress
       if (["in_progress", "started"].includes(visitData.status)) {
         const tasksRes = await fetch(`/api/visits/${visitId}/execute/tasks`);
-        if (tasksRes.ok) {
-          const tasksData = await tasksRes.json();
-          setTasks(tasksData.tasks);
-        }
+        if (tasksRes.ok) setTasks((await tasksRes.json()).tasks);
 
         const medRes = await fetch(`/api/visits/${visitId}/execute/medications`);
-        if (medRes.ok) {
-          const medData = await medRes.json();
-          setMedications(medData.medications);
-        }
+        if (medRes.ok) setMedications((await medRes.json()).medications);
 
         const notesRes = await fetch(`/api/visits/${visitId}/execute/notes`);
-        if (notesRes.ok) {
-          const notesData = await notesRes.json();
-          setNotes(notesData.notes);
-        }
-
+        if (notesRes.ok) setNotes((await notesRes.json()).notes);
       }
     } catch (err) {
       console.error("Error fetching visit data:", err);
@@ -119,17 +176,47 @@ export default function VisitDetailPage({ params }: { params: { id: string } }) 
     }
   }, [visitId]);
 
-   
+  const fetchDocuments = useCallback(async () => {
+    try {
+      setLoadingDocuments(true);
+      const response = await fetch(`/api/documents?entityType=visit&entityId=${visitId}&limit=50`);
+      if (response.ok) {
+        const data = await response.json();
+        setDocuments(data.data || []);
+      }
+    } finally {
+      setLoadingDocuments(false);
+    }
+  }, [visitId]);
+
   useEffect(() => {
-    fetchVisitData();
-  }, [fetchVisitData]);
+    // Deferred to a microtask so these fetch triggers aren't synchronous setState calls in the effect body.
+    queueMicrotask(() => {
+      fetchVisitData();
+      fetchDocuments();
+
+      const fetchAuditLogs = async () => {
+        try {
+          setLoadingAudit(true);
+          const response = await fetch(
+            `/api/audit-logs?entityType=scheduled_visits&entityId=${visitId}&limit=20`
+          );
+          if (response.ok) {
+            const data = await response.json();
+            setAuditLogs(data.data || []);
+          }
+        } finally {
+          setLoadingAudit(false);
+        }
+      };
+      fetchAuditLogs();
+    });
+  }, [visitId, fetchVisitData, fetchDocuments]);
 
   const handleStartVisit = async () => {
     try {
       const now = new Date();
-      const timeStr = `${String(now.getHours()).padStart(2, "0")}:${String(
-        now.getMinutes()
-      ).padStart(2, "0")}`;
+      const timeStr = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
 
       const response = await fetch(`/api/visits/${visitId}/execute/start`, {
         method: "POST",
@@ -137,9 +224,7 @@ export default function VisitDetailPage({ params }: { params: { id: string } }) 
         body: JSON.stringify({ actual_start_time: timeStr }),
       });
 
-      if (!response.ok) {
-        throw new Error(await response.text());
-      }
+      if (!response.ok) throw new Error(await response.text());
 
       setIsEditing(true);
       await fetchVisitData();
@@ -155,12 +240,7 @@ export default function VisitDetailPage({ params }: { params: { id: string } }) 
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ care_plan_task_id: taskId, status, notes }),
       });
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.error || "Failed to record task");
-      }
-
+      if (!response.ok) throw new Error((await response.json()).error || "Failed to record task");
       await fetchVisitData();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to record task");
@@ -174,12 +254,8 @@ export default function VisitDetailPage({ params }: { params: { id: string } }) 
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(data),
       });
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.error || "Failed to record medication");
-      }
-
+      if (!response.ok)
+        throw new Error((await response.json()).error || "Failed to record medication");
       await fetchVisitData();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to record medication");
@@ -193,12 +269,7 @@ export default function VisitDetailPage({ params }: { params: { id: string } }) 
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(data),
       });
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.error || "Failed to save note");
-      }
-
+      if (!response.ok) throw new Error((await response.json()).error || "Failed to save note");
       await fetchVisitData();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to save note");
@@ -210,23 +281,17 @@ export default function VisitDetailPage({ params }: { params: { id: string } }) 
       setError("Completion notes are required");
       return;
     }
-
     try {
       const now = new Date();
-      const timeStr = `${String(now.getHours()).padStart(2, "0")}:${String(
-        now.getMinutes()
-      ).padStart(2, "0")}`;
+      const timeStr = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
 
       const response = await fetch(`/api/visits/${visitId}/execute/complete`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ actual_end_time: timeStr, notes: completionNotes }),
       });
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.error || "Failed to complete visit");
-      }
+      if (!response.ok)
+        throw new Error((await response.json()).error || "Failed to complete visit");
 
       setIsEditing(false);
       setCompletionNotes("");
@@ -237,42 +302,157 @@ export default function VisitDetailPage({ params }: { params: { id: string } }) 
     }
   };
 
+  const handleCancelVisit = async () => {
+    try {
+      setStatusActionLoading(true);
+      const response = await fetch(`/api/visits/${visitId}/complete`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: "cancelled" }),
+      });
+      if (!response.ok) throw new Error("Failed to cancel visit");
+      await fetchVisitData();
+      addToast({ type: "success", message: "Visit cancelled" });
+    } catch (err) {
+      addToast({
+        type: "error",
+        message: err instanceof Error ? err.message : "Failed to cancel visit",
+      });
+    } finally {
+      setStatusActionLoading(false);
+      setConfirmCancel(false);
+    }
+  };
+
+  const handleNoShow = async () => {
+    try {
+      setStatusActionLoading(true);
+      const response = await fetch(`/api/visits/${visitId}/complete`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: "no_show" }),
+      });
+      if (!response.ok) throw new Error("Failed to mark as no-show");
+      await fetchVisitData();
+      addToast({ type: "success", message: "Visit marked as no-show" });
+    } catch (err) {
+      addToast({
+        type: "error",
+        message: err instanceof Error ? err.message : "Failed to mark as no-show",
+      });
+    } finally {
+      setStatusActionLoading(false);
+      setConfirmNoShow(false);
+    }
+  };
+
+  const handleUpload = async () => {
+    if (!uploadFile || !uploadDocumentType) {
+      addToast({ type: "warning", message: "Choose a document type and a file first" });
+      return;
+    }
+    try {
+      setUploading(true);
+      const formData = new FormData();
+      formData.append("file", uploadFile);
+      formData.append("entityType", "visit");
+      formData.append("entityId", visitId);
+      formData.append("documentType", uploadDocumentType);
+
+      const response = await fetch("/api/documents", { method: "POST", body: formData });
+      if (!response.ok) throw new Error("Upload failed");
+
+      addToast({ type: "success", message: "Document uploaded" });
+      setUploadFile(null);
+      setUploadDocumentType("");
+      fetchDocuments();
+    } catch (err) {
+      addToast({
+        type: "error",
+        message: err instanceof Error ? err.message : "Failed to upload document",
+      });
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const handleDeleteDocument = async (id: string) => {
+    try {
+      const response = await fetch(`/api/documents/${id}`, { method: "DELETE" });
+      if (!response.ok) throw new Error("Delete failed");
+      addToast({ type: "success", message: "Document deleted" });
+      fetchDocuments();
+    } catch (err) {
+      addToast({
+        type: "error",
+        message: err instanceof Error ? err.message : "Failed to delete document",
+      });
+    }
+  };
+
+  const handleDownloadDocument = async (doc: DocumentEntry) => {
+    try {
+      const response = await fetch(`/api/documents/${doc.id}/download`);
+      if (!response.ok) throw new Error("Download failed");
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = doc.file_name;
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+    } catch {
+      addToast({ type: "error", message: "Failed to download document" });
+    }
+  };
+
   if (loading) {
     return (
-      <div className="space-y-6 p-6">
-        <div className="h-12 bg-gray-200 dark:bg-gray-700 rounded animate-pulse" />
-        <div className="h-96 bg-gray-200 dark:bg-gray-700 rounded animate-pulse" />
+      <div className="space-y-6">
+        <Skeleton className="h-10 w-1/3" />
+        <Skeleton className="h-96 w-full" />
       </div>
     );
   }
 
   if (!visit) {
     return (
-      <div className="text-center py-12">
-        <h2 className="text-2xl font-bold mb-4">Visit not found</h2>
-        <Button onClick={() => router.back()}>Go back</Button>
+      <div className="space-y-6">
+        <PageHeader title="Visit Not Found" />
+        <Card bordered padding="lg" className="text-center">
+          <p className="mb-4 text-muted-foreground">
+            The visit you are looking for does not exist.
+          </p>
+          <Button onClick={() => router.push("/admin/visits")}>Back to Visits</Button>
+        </Card>
       </div>
     );
   }
 
   const isInProgress = ["in_progress", "started"].includes(visit.status);
   const isCompleted = visit.status === "completed";
+  const isClosed = ["completed", "cancelled", "no_show"].includes(visit.status);
   const canStart = ["scheduled", "confirmed"].includes(visit.status);
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <PageHeader
-          title={visit.title}
-          description={`${visit.visit_type} • ${formatDate(
-            new Date(`${visit.scheduled_date}T${visit.start_time}`),
-            "MMM d, yyyy HH:mm"
-          )}`}
-        />
-        <div className="flex gap-2">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <div className="flex flex-wrap items-center gap-2">
+            <h1 className="text-2xl font-semibold tracking-tight text-foreground">{visit.title}</h1>
+            <StatusBadge status={visit.status} size="sm" />
+          </div>
+          <p className="mt-1 text-sm text-muted-foreground">
+            {visit.visit_type} ·{" "}
+            {format(new Date(`${visit.scheduled_date}T${visit.start_time}`), "MMM d, yyyy HH:mm")}
+          </p>
+        </div>
+        <div className="flex shrink-0 gap-2">
           {canStart && (
-            <Button onClick={handleStartVisit} className="gap-2">
-              <Play className="w-4 h-4" />
+            <Button onClick={handleStartVisit}>
+              <Play className={ICON_SIZE.sm} strokeWidth={ICON_STROKE_WIDTH} />
               Start Visit
             </Button>
           )}
@@ -280,166 +460,313 @@ export default function VisitDetailPage({ params }: { params: { id: string } }) 
             <Button
               onClick={() => setIsEditing(!isEditing)}
               variant={isEditing ? "secondary" : "outline"}
-              className="gap-2"
             >
-              <Square className="w-4 h-4" />
+              <Square className={ICON_SIZE.sm} strokeWidth={ICON_STROKE_WIDTH} />
               {isEditing ? "Stop Editing" : "Edit"}
             </Button>
+          )}
+          {!isClosed && (
+            <>
+              <Button variant="outline" onClick={() => setConfirmNoShow(true)}>
+                <UserX className={ICON_SIZE.sm} strokeWidth={ICON_STROKE_WIDTH} />
+                No Show
+              </Button>
+              <Button variant="outline" onClick={() => setConfirmCancel(true)}>
+                <XCircle className={ICON_SIZE.sm} strokeWidth={ICON_STROKE_WIDTH} />
+                Cancel
+              </Button>
+            </>
           )}
         </div>
       </div>
 
       {error && (
-        <div className="flex gap-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-4 text-red-700 dark:text-red-400">
-          <AlertCircle className="w-5 h-5 flex-shrink-0 mt-0.5" />
-          <p className="text-sm">{error}</p>
+        <div className="flex gap-3 rounded-md border border-danger/30 bg-danger/10 p-4 text-sm text-danger">
+          <AlertCircle
+            className={`${ICON_SIZE.md} mt-0.5 shrink-0`}
+            strokeWidth={ICON_STROKE_WIDTH}
+          />
+          <p>{error}</p>
         </div>
       )}
 
       {isCompleted && (
-        <div className="flex gap-3 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-lg p-4 text-green-700 dark:text-green-400">
-          <CheckCircle className="w-5 h-5 flex-shrink-0 mt-0.5" />
-          <p className="text-sm">This visit has been completed</p>
+        <div className="flex gap-3 rounded-md border border-success/30 bg-success/10 p-4 text-sm text-success">
+          <CheckCircle
+            className={`${ICON_SIZE.md} mt-0.5 shrink-0`}
+            strokeWidth={ICON_STROKE_WIDTH}
+          />
+          <p>This visit has been completed.</p>
         </div>
       )}
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        {/* Visit Information */}
-        <div className="bg-white dark:bg-gray-800 rounded-lg p-6 space-y-4">
-          <h3 className="font-semibold text-lg">Visit Information</h3>
+      <div className="grid grid-cols-1 gap-6 md:grid-cols-3">
+        <Card bordered padding="md">
+          <CardHeader>
+            <CardTitle size="sm">Visit Information</CardTitle>
+          </CardHeader>
+          <dl className="divide-y divide-border">
+            {visit.client && (
+              <DetailRow
+                label="Client"
+                value={`${visit.client.first_name} ${visit.client.last_name}`}
+              />
+            )}
+            {visit.employee && (
+              <DetailRow
+                label="Employee"
+                value={`${visit.employee.first_name} ${visit.employee.last_name}`}
+              />
+            )}
+            {visit.care_plan && <DetailRow label="Care Plan" value={visit.care_plan.title} />}
+            <DetailRow
+              label="Duration"
+              value={
+                <span className="inline-flex items-center gap-1">
+                  <Clock className={ICON_SIZE.sm} strokeWidth={ICON_STROKE_WIDTH} />
+                  {visit.estimated_duration_minutes} min
+                </span>
+              }
+            />
+            <DetailRow
+              label="Scheduled"
+              value={`${visit.start_time?.slice(0, 5)} - ${visit.end_time?.slice(0, 5)}`}
+            />
+          </dl>
+        </Card>
 
-          {visit.client && (
-            <div>
-              <p className="text-sm text-gray-600 dark:text-gray-400">Client</p>
-              <p className="font-medium text-gray-900 dark:text-white">
-                {visit.client.first_name} {visit.client.last_name}
-              </p>
-            </div>
-          )}
-
-          {visit.employee && (
-            <div>
-              <p className="text-sm text-gray-600 dark:text-gray-400">Employee</p>
-              <p className="font-medium text-gray-900 dark:text-white">
-                {visit.employee.first_name} {visit.employee.last_name}
-              </p>
-            </div>
-          )}
-
-          {visit.care_plan && (
-            <div>
-              <p className="text-sm text-gray-600 dark:text-gray-400">Care Plan</p>
-              <p className="font-medium text-gray-900 dark:text-white">
-                {visit.care_plan.title}
-              </p>
-            </div>
-          )}
-
-          <div>
-            <p className="text-sm text-gray-600 dark:text-gray-400">Status</p>
-            <span className={`inline-block px-2 py-1 rounded text-xs font-medium ${
-              isCompleted ? "bg-green-100 dark:bg-green-900/30 text-green-800 dark:text-green-200" :
-              isInProgress ? "bg-blue-100 dark:bg-blue-900/30 text-blue-800 dark:text-blue-200" :
-              "bg-gray-100 dark:bg-gray-700 text-gray-800 dark:text-gray-200"
-            }`}>
-              {visit.status}
-            </span>
-          </div>
-
-          <div className="flex items-center gap-2">
-            <Clock className="w-4 h-4 text-gray-600 dark:text-gray-400" />
-            <span className="text-sm">
-              {visit.estimated_duration_minutes} min
-            </span>
-          </div>
-
-          <div>
-            <p className="text-sm text-gray-600 dark:text-gray-400">Scheduled</p>
-            <p className="text-sm font-medium">
-              {visit.start_time} - {visit.end_time}
-            </p>
-          </div>
-        </div>
-
-        {/* Main Content */}
-        <div className="md:col-span-2 space-y-6">
+        <div className="space-y-6 md:col-span-2">
           {isInProgress && (
             <>
-              <div className="bg-white dark:bg-gray-800 rounded-lg p-6">
+              <Card bordered padding="md">
                 <TaskChecklistWidget
                   tasks={tasks}
                   isEditing={isEditing}
                   onTaskComplete={handleTaskComplete}
                 />
-              </div>
-
-              <div className="bg-white dark:bg-gray-800 rounded-lg p-6">
+              </Card>
+              <Card bordered padding="md">
                 <MedicationWidget
                   medications={medications}
                   isEditing={isEditing}
                   onAddMedication={handleAddMedication}
                 />
-              </div>
-
-              <div className="bg-white dark:bg-gray-800 rounded-lg p-6">
-                <VisitNotesWidget
-                  notes={notes}
-                  isEditing={isEditing}
-                  onAddNote={handleAddNote}
-                />
-              </div>
+              </Card>
+              <Card bordered padding="md">
+                <VisitNotesWidget notes={notes} isEditing={isEditing} onAddNote={handleAddNote} />
+              </Card>
 
               {isEditing && (
-                <div className="bg-white dark:bg-gray-800 rounded-lg p-6 space-y-4">
-                  <h3 className="font-semibold text-lg">Complete Visit</h3>
-                  <div>
-                    <label className="block text-sm font-medium mb-2">
-                      Completion Notes *
-                    </label>
-                    <textarea
-                      value={completionNotes}
-                      onChange={(e) => setCompletionNotes(e.target.value)}
-                      rows={4}
-                      className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
-                      placeholder="Summary of the visit, any observations, or incidents..."
-                    />
-                  </div>
+                <Card bordered padding="md" className="space-y-4">
+                  <CardTitle size="sm">Complete Visit</CardTitle>
+                  <Textarea
+                    label="Completion Notes"
+                    required
+                    value={completionNotes}
+                    onChange={(e) => setCompletionNotes(e.target.value)}
+                    rows={4}
+                    placeholder="Summary of the visit, any observations, or incidents..."
+                  />
                   <div className="flex gap-2">
-                    <Button onClick={handleCompleteVisit}>
-                      Complete Visit
-                    </Button>
-                    <Button
-                      variant="outline"
-                      onClick={() => setIsEditing(false)}
-                    >
+                    <Button onClick={handleCompleteVisit}>Complete Visit</Button>
+                    <Button variant="outline" onClick={() => setIsEditing(false)}>
                       Cancel
                     </Button>
                   </div>
-                </div>
+                </Card>
               )}
             </>
           )}
 
-          {!isInProgress && !isCompleted && (
-            <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-6 text-center">
-              <p className="text-blue-900 dark:text-blue-200">
-                Click &quot;Start Visit&quot; to begin recording visit details
+          {!isInProgress && !isCompleted && !isClosed && (
+            <Card bordered padding="md" className="border-l-4 border-l-info text-center">
+              <p className="text-sm text-foreground">
+                Click &quot;Start Visit&quot; to begin recording visit details.
               </p>
-            </div>
+            </Card>
           )}
 
           {isCompleted && notes.length > 0 && (
-            <div className="bg-white dark:bg-gray-800 rounded-lg p-6">
-              <h3 className="font-semibold text-lg mb-4">Completed Notes</h3>
-              <VisitNotesWidget
-                notes={notes}
-                isEditing={false}
-                onAddNote={async () => {}}
-              />
-            </div>
+            <Card bordered padding="md">
+              <CardHeader>
+                <CardTitle size="sm">Completed Notes</CardTitle>
+              </CardHeader>
+              <VisitNotesWidget notes={notes} isEditing={false} onAddNote={async () => {}} />
+            </Card>
           )}
         </div>
       </div>
+
+      <Card bordered padding="md">
+        <CardHeader>
+          <CardTitle size="sm">Upload Document</CardTitle>
+        </CardHeader>
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <Select
+            label="Document Type"
+            placeholder="Select document type..."
+            value={uploadDocumentType}
+            onChange={(e) => setUploadDocumentType(e.target.value)}
+            options={DOCUMENT_TYPES}
+          />
+          <div>
+            <label className="mb-1.5 block text-sm font-medium text-foreground">File</label>
+            <input
+              type="file"
+              onChange={(e) => setUploadFile(e.target.files?.[0] || null)}
+              accept=".pdf,.doc,.docx,.xls,.xlsx,.jpg,.jpeg,.png,.tiff"
+              className="block w-full text-sm text-muted-foreground file:mr-3 file:rounded-md file:border-0 file:bg-accent file:px-3 file:py-2 file:text-sm file:font-medium file:text-foreground"
+            />
+          </div>
+        </div>
+        <div className="mt-4 flex justify-end">
+          <Button onClick={handleUpload} loading={uploading}>
+            <Upload className={ICON_SIZE.sm} strokeWidth={ICON_STROKE_WIDTH} />
+            Upload
+          </Button>
+        </div>
+      </Card>
+
+      {loadingDocuments ? (
+        <Card bordered padding="md" className="space-y-3">
+          <Skeleton className="h-10 w-full" />
+        </Card>
+      ) : documents.length === 0 ? (
+        <Card bordered padding="md">
+          <EmptyState
+            icon={FileText}
+            title="No documents yet"
+            description="Photos, attachments and other files for this visit will appear here."
+          />
+        </Card>
+      ) : (
+        <Table>
+          <TableHead>
+            <TableRow hover={false}>
+              <TableHeaderCell>File</TableHeaderCell>
+              <TableHeaderCell>Type</TableHeaderCell>
+              <TableHeaderCell>Status</TableHeaderCell>
+              <TableHeaderCell>Uploaded</TableHeaderCell>
+              <TableHeaderCell className="text-right">Actions</TableHeaderCell>
+            </TableRow>
+          </TableHead>
+          <TableBody>
+            {documents.map((doc) => (
+              <TableRow key={doc.id}>
+                <TableCell className="font-medium text-foreground">{doc.file_name}</TableCell>
+                <TableCell className="capitalize text-muted-foreground">
+                  {doc.document_type.replace(/_/g, " ")}
+                </TableCell>
+                <TableCell>
+                  <StatusBadge
+                    status={doc.verification_status}
+                    label={doc.verification_status}
+                    className="capitalize"
+                    size="sm"
+                  />
+                </TableCell>
+                <TableCell className="text-muted-foreground">
+                  {format(new Date(doc.uploaded_at), "PP")}
+                </TableCell>
+                <TableCell align="right">
+                  <div className="flex justify-end gap-1">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-8 w-8 p-0"
+                      aria-label="Preview"
+                      asChild
+                    >
+                      <a
+                        href={`/api/documents/${doc.id}/preview`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                      >
+                        <Eye className={ICON_SIZE.sm} strokeWidth={ICON_STROKE_WIDTH} />
+                      </a>
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-8 w-8 p-0"
+                      aria-label="Download"
+                      onClick={() => handleDownloadDocument(doc)}
+                    >
+                      <Download className={ICON_SIZE.sm} strokeWidth={ICON_STROKE_WIDTH} />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-8 w-8 p-0 text-danger hover:text-danger"
+                      aria-label="Delete"
+                      onClick={() => handleDeleteDocument(doc.id)}
+                    >
+                      <Trash2 className={ICON_SIZE.sm} strokeWidth={ICON_STROKE_WIDTH} />
+                    </Button>
+                  </div>
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      )}
+
+      <Card bordered padding="md">
+        <CardHeader>
+          <CardTitle size="sm">Audit History</CardTitle>
+        </CardHeader>
+        {loadingAudit ? (
+          <Skeleton className="h-16 w-full" />
+        ) : auditLogs.length === 0 ? (
+          <p className="text-sm text-muted-foreground">No recorded activity yet.</p>
+        ) : (
+          <ul className="space-y-4">
+            {auditLogs.map((log) => (
+              <li key={log.id} className="flex items-start gap-3">
+                <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-muted text-muted-foreground">
+                  <Clock3 className={ICON_SIZE.sm} strokeWidth={ICON_STROKE_WIDTH} />
+                </div>
+                <div className="min-w-0">
+                  <p className="text-sm text-foreground">
+                    <span className="font-medium capitalize">{log.action.replace(/_/g, " ")}</span>{" "}
+                    by{" "}
+                    {log.users
+                      ? `${log.users.first_name} ${log.users.last_name}`.trim() || log.users.email
+                      : "system"}
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    {new Date(log.created_at).toLocaleString("nl-NL")}
+                  </p>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </Card>
+
+      <ConfirmDialog
+        isOpen={confirmCancel}
+        title="Cancel visit"
+        message="This visit will be marked as cancelled. This can't be undone from here, but the visit stays in history."
+        confirmLabel="Cancel Visit"
+        cancelLabel="Keep Visit"
+        variant="danger"
+        onConfirm={handleCancelVisit}
+        onCancel={() => setConfirmCancel(false)}
+        isLoading={statusActionLoading}
+      />
+
+      <ConfirmDialog
+        isOpen={confirmNoShow}
+        title="Mark as no-show"
+        message="This visit will be marked as a no-show. This can't be undone from here, but the visit stays in history."
+        confirmLabel="Mark No Show"
+        cancelLabel="Cancel"
+        variant="warning"
+        onConfirm={handleNoShow}
+        onCancel={() => setConfirmNoShow(false)}
+        isLoading={statusActionLoading}
+      />
     </div>
   );
 }

@@ -185,26 +185,41 @@ CREATE INDEX idx_communication_logs_entity_type_id ON communication_logs(entity_
 -- RLS Policies for documents
 ALTER TABLE documents ENABLE ROW LEVEL SECURITY;
 CREATE POLICY documents_org_isolation ON documents
-  USING (organization_id = auth.jwt() ->> 'org_id'::text);
+  USING (
+    organization_id IN (
+      SELECT organization_id FROM users WHERE id = auth.uid()
+    )
+  );
 
 -- RLS Policies for document_versions
 ALTER TABLE document_versions ENABLE ROW LEVEL SECURITY;
 CREATE POLICY document_versions_access ON document_versions
-  USING (document_id IN (
-    SELECT id FROM documents WHERE organization_id = auth.jwt() ->> 'org_id'::text
-  ));
+  USING (
+    document_id IN (
+      SELECT id FROM documents
+      WHERE organization_id IN (
+        SELECT organization_id FROM users WHERE id = auth.uid()
+      )
+    )
+  );
 
 -- RLS Policies for document_audit_logs
 ALTER TABLE document_audit_logs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY document_audit_logs_org_isolation ON document_audit_logs
-  USING (organization_id = auth.jwt() ->> 'org_id'::text);
+  USING (
+    organization_id IN (
+      SELECT organization_id FROM users WHERE id = auth.uid()
+    )
+  );
 
 -- RLS Policies for notifications
 ALTER TABLE notifications ENABLE ROW LEVEL SECURITY;
 CREATE POLICY notifications_user_access ON notifications
-  USING (user_id = auth.uid() OR organization_id IN (
-    SELECT organization_id FROM users WHERE id = auth.uid()
-  ));
+  USING (
+    user_id = auth.uid() OR organization_id IN (
+      SELECT organization_id FROM users WHERE id = auth.uid()
+    )
+  );
 
 -- RLS Policies for notification_preferences
 ALTER TABLE notification_preferences ENABLE ROW LEVEL SECURITY;
@@ -214,14 +229,26 @@ CREATE POLICY notification_preferences_user_access ON notification_preferences
 -- RLS Policies for email_templates
 ALTER TABLE email_templates ENABLE ROW LEVEL SECURITY;
 CREATE POLICY email_templates_org_isolation ON email_templates
-  USING (organization_id = auth.jwt() ->> 'org_id'::text);
+  USING (
+    organization_id IN (
+      SELECT organization_id FROM users WHERE id = auth.uid()
+    )
+  );
 
 -- RLS Policies for email_logs
 ALTER TABLE email_logs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY email_logs_org_isolation ON email_logs
-  USING (organization_id = auth.jwt() ->> 'org_id'::text);
+  USING (
+    organization_id IN (
+      SELECT organization_id FROM users WHERE id = auth.uid()
+    )
+  );
 
 -- RLS Policies for communication_logs
 ALTER TABLE communication_logs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY communication_logs_org_isolation ON communication_logs
-  USING (organization_id = auth.jwt() ->> 'org_id'::text);
+  USING (
+    organization_id IN (
+      SELECT organization_id FROM users WHERE id = auth.uid()
+    )
+  );

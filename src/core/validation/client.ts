@@ -2,6 +2,7 @@ import { z } from "zod";
 
 export const caseStatusEnum = z.enum(["active", "inactive", "discharged"]);
 export const riskLevelEnum = z.enum(["low", "medium", "high"]);
+export const clientStatusEnum = z.enum(["active", "inactive", "archived"]);
 
 export const createClientSchema = z.object({
   first_name: z
@@ -17,20 +18,13 @@ export const createClientSchema = z.object({
     .refine((date) => !isNaN(Date.parse(date)), "Invalid date of birth")
     .refine((date) => new Date(date) < new Date(), "Date of birth cannot be in the future")
     .optional(),
-  email: z
-    .string()
-    .email("Invalid email address")
-    .optional()
-    .or(z.literal("")),
+  email: z.string().email("Invalid email address").optional().or(z.literal("")),
   phone: z
     .string()
     .regex(/^[\d\s\-+()]*$/, "Invalid phone number")
     .optional()
     .or(z.literal("")),
-  branch_id: z
-    .string()
-    .min(1, "Branch is required")
-    .uuid("Invalid branch ID"),
+  branch_id: z.string().min(1, "Branch is required").uuid("Invalid branch ID"),
   case_status: caseStatusEnum,
   risk_level: riskLevelEnum.optional(),
   emergency_contact_name: z
@@ -63,11 +57,7 @@ export const createClientSchema = z.object({
     .max(20, "Postal code must be less than 20 characters")
     .optional()
     .or(z.literal("")),
-  city: z
-    .string()
-    .max(100, "City must be less than 100 characters")
-    .optional()
-    .or(z.literal("")),
+  city: z.string().max(100, "City must be less than 100 characters").optional().or(z.literal("")),
   country: z
     .string()
     .max(100, "Country must be less than 100 characters")
@@ -86,6 +76,7 @@ export const createClientSchema = z.object({
 });
 
 export const updateClientSchema = createClientSchema.partial().extend({
+  status: clientStatusEnum.optional(),
   is_active: z.boolean().optional(),
 });
 

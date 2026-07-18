@@ -50,19 +50,21 @@ export function CarePlanForm({ carePlan, isLoading = false, onSubmit }: CarePlan
     formState: { errors, isSubmitting },
   } = useForm({
     resolver: zodResolver(schema),
-    defaultValues: carePlan ? {
-      client_id: carePlan.client_id || "",
-      branch_id: carePlan.branch_id || "",
-      primary_caregiver_id: carePlan.primary_caregiver_id || "",
-      title: carePlan.title || "",
-      description: carePlan.description || "",
-      assessment_notes: carePlan.assessment_notes || "",
-      status: carePlan.status || "draft",
-      priority: carePlan.priority || "normal",
-      start_date: carePlan.start_date || "",
-      review_date: carePlan.review_date || "",
-      end_date: carePlan.end_date || "",
-    } : {},
+    defaultValues: carePlan
+      ? {
+          client_id: carePlan.client_id || "",
+          branch_id: carePlan.branch_id || "",
+          primary_caregiver_id: carePlan.primary_caregiver_id || "",
+          title: carePlan.title || "",
+          description: carePlan.description || "",
+          assessment_notes: carePlan.assessment_notes || "",
+          status: carePlan.status || "draft",
+          priority: carePlan.priority || "normal",
+          start_date: carePlan.start_date || "",
+          review_date: carePlan.review_date || "",
+          end_date: carePlan.end_date || "",
+        }
+      : {},
   });
 
   useEffect(() => {
@@ -86,7 +88,7 @@ export function CarePlanForm({ carePlan, isLoading = false, onSubmit }: CarePlan
 
         if (branchesRes.ok) {
           const data = await branchesRes.json();
-          setBranches(data.branches || data);
+          setBranches(data.data || []);
         }
       } catch (err) {
         console.error("Error fetching form data:", err);
@@ -189,9 +191,7 @@ export function CarePlanForm({ carePlan, isLoading = false, onSubmit }: CarePlan
             className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
           />
           {errors.title && (
-            <p className="text-red-600 dark:text-red-400 text-sm mt-1">
-              {errors.title.message}
-            </p>
+            <p className="text-red-600 dark:text-red-400 text-sm mt-1">{errors.title.message}</p>
           )}
         </div>
       </div>

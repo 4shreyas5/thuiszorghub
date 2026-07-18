@@ -1,4 +1,11 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from "react";
+
+interface InvoiceData {
+  total_amount: number;
+  paid_amount: number;
+  remaining_balance: number;
+  status: "draft" | "sent" | "paid" | "overdue" | "pending" | "partially_paid" | "cancelled";
+}
 
 interface ClientBillingSummary {
   clientId: string;
@@ -16,6 +23,7 @@ export function useClientBillingSummary(clientId: string) {
   const [summary, setSummary] = useState<ClientBillingSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const isInitialMount = useRef(true);
 
   const fetchInvoices = useCallback(async () => {
     try {
@@ -24,18 +32,18 @@ export function useClientBillingSummary(clientId: string) {
 
       const query = new URLSearchParams({
         clientId,
-        limit: '1000',
-        offset: '0',
+        limit: "1000",
+        offset: "0",
       });
 
       const response = await globalThis.fetch(`/api/billing/invoices?${query}`);
 
       if (!response.ok) {
-        throw new Error('Failed to fetch invoices');
+        throw new Error("Failed to fetch invoices");
       }
 
       const data = await response.json();
-      const invoices = data.data || [];
+      const invoices: InvoiceData[] = data.data || [];
 
       let totalInvoiced = 0;
       let totalPaid = 0;
@@ -45,15 +53,15 @@ export function useClientBillingSummary(clientId: string) {
       let invoicesPaid = 0;
       let invoicesOverdue = 0;
 
-      invoices.forEach((inv: any) => {
+      invoices.forEach((inv: InvoiceData) => {
         totalInvoiced += inv.total_amount;
         totalPaid += inv.paid_amount;
         totalOutstanding += inv.remaining_balance;
 
-        if (inv.status === 'draft') invoicesDraft++;
-        if (inv.status === 'sent') invoicesSent++;
-        if (inv.status === 'paid') invoicesPaid++;
-        if (inv.status === 'overdue') invoicesOverdue++;
+        if (inv.status === "draft") invoicesDraft++;
+        if (inv.status === "sent") invoicesSent++;
+        if (inv.status === "paid") invoicesPaid++;
+        if (inv.status === "overdue") invoicesOverdue++;
       });
 
       setSummary({
@@ -68,7 +76,7 @@ export function useClientBillingSummary(clientId: string) {
         invoicesOverdue,
       });
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Unknown error');
+      setError(err instanceof Error ? err.message : "Unknown error");
       setSummary(null);
     } finally {
       setLoading(false);
@@ -76,7 +84,10 @@ export function useClientBillingSummary(clientId: string) {
   }, [clientId]);
 
   useEffect(() => {
-    fetchInvoices();
+    if (isInitialMount.current) {
+      isInitialMount.current = false;
+      fetchInvoices();
+    }
   }, [fetchInvoices]);
 
   return { summary, loading, error, refetch: fetchInvoices };

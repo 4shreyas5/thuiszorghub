@@ -1,9 +1,16 @@
 import { Timestamp } from "./common";
 
-export interface Employee extends Timestamp {
+export type EmployeeStatus = "active" | "inactive" | "on_leave" | "archived";
+
+// Deliberately NOT `extends Timestamp` - that type declares camelCase
+// createdAt/updatedAt as Date objects, but the employees API returns raw
+// Supabase rows (snake_case string timestamps). Declaring the real shape
+// here instead of the mismatched shared type.
+export interface Employee {
   id: string;
   organization_id: string;
   branch_id: string;
+  branch?: { id: string; name: string };
   user_id?: string;
   first_name: string;
   last_name: string;
@@ -13,11 +20,17 @@ export interface Employee extends Timestamp {
   hourly_rate?: number;
   start_date: string;
   end_date?: string;
+  status: EmployeeStatus;
   is_active: boolean;
   bio?: string;
   avatar_url?: string;
+  emergency_contact_name?: string;
+  emergency_contact_phone?: string;
+  emergency_contact_relationship?: string;
   is_deleted: boolean;
   deleted_at?: string;
+  created_at: string;
+  updated_at: string;
   qualifications?: EmployeeQualification[];
   languages?: EmployeeLanguage[];
   availability?: EmployeeAvailability[];
@@ -77,8 +90,12 @@ export interface CreateEmployeePayload {
   end_date?: string;
   hourly_rate?: number;
   bio?: string;
+  emergency_contact_name?: string;
+  emergency_contact_phone?: string;
+  emergency_contact_relationship?: string;
 }
 
 export interface UpdateEmployeePayload extends Partial<CreateEmployeePayload> {
+  status?: EmployeeStatus;
   is_active?: boolean;
 }

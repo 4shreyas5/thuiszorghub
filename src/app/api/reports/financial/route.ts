@@ -6,14 +6,14 @@ interface FinancialFilters {
   endDate?: string | undefined;
   branchId?: string | undefined;
   clientId?: string | undefined;
-  insuranceProvider?: string | undefined;
-  municipality?: string | undefined;
 }
 
 export async function GET(request: NextRequest) {
   try {
     const supabase = await createServerClient();
-    const { data: { user } } = await supabase.auth.getUser();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
 
     if (!user) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -38,19 +38,20 @@ export async function GET(request: NextRequest) {
       endDate: searchParams.get("endDate") || undefined,
       branchId: searchParams.get("branchId") || undefined,
       clientId: searchParams.get("clientId") || undefined,
-      insuranceProvider: searchParams.get("insuranceProvider") || undefined,
-      municipality: searchParams.get("municipality") || undefined,
     };
 
     // Get date range
     const now = new Date();
-    const startDate = filters.startDate || new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split('T')[0];
-    const endDate = filters.endDate || now.toISOString().split('T')[0];
+    const startDate =
+      filters.startDate ||
+      new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split("T")[0];
+    const endDate = filters.endDate || now.toISOString().split("T")[0];
 
     // Get invoices
     let invoiceQuery = supabase
       .from("invoices")
-      .select(`
+      .select(
+        `
         id,
         total_amount,
         paid_amount,
@@ -60,7 +61,8 @@ export async function GET(request: NextRequest) {
         due_date,
         client_id,
         branch_id
-      `)
+      `
+      )
       .eq("organization_id", organizationId)
       .eq("is_deleted", false)
       .gte("invoice_date", startDate)
@@ -79,10 +81,8 @@ export async function GET(request: NextRequest) {
     const totalOutstanding = invoices?.reduce((sum, inv) => sum + inv.remaining_balance, 0) || 0;
 
     // Overdue invoices
-    const today = new Date().toISOString().split('T')[0];
-    const overdue = invoices?.filter(inv =>
-      inv.status !== "paid" && inv.due_date < today
-    ) || [];
+    const today = new Date().toISOString().split("T")[0];
+    const overdue = invoices?.filter((inv) => inv.status !== "paid" && inv.due_date < today) || [];
     const overdueAmount = overdue.reduce((sum, inv) => sum + inv.remaining_balance, 0);
 
     // Invoice aging
@@ -94,10 +94,12 @@ export async function GET(request: NextRequest) {
     };
 
     const todayDate = new Date();
-    invoices?.forEach(inv => {
+    invoices?.forEach((inv) => {
       if (inv.status === "paid") return;
       const dueDate = new Date(inv.due_date);
-      const daysDifference = Math.floor((todayDate.getTime() - dueDate.getTime()) / (1000 * 60 * 60 * 24));
+      const daysDifference = Math.floor(
+        (todayDate.getTime() - dueDate.getTime()) / (1000 * 60 * 60 * 24)
+      );
 
       if (daysDifference <= 0) invoiceAging.current += inv.remaining_balance;
       else if (daysDifference <= 30) invoiceAging["30_60"] += inv.remaining_balance;
@@ -105,28 +107,31 @@ export async function GET(request: NextRequest) {
       else invoiceAging["90_plus"] += inv.remaining_balance;
     });
 
-    // Get payments
+    // Get payments - the real table is "payments" (see
+    // src/app/api/billing/payments/route.ts), not "invoice_payments".
     const { data: payments } = await supabase
-      .from("invoice_payments")
+      .from("payments")
       .select("amount, payment_date, payment_method")
       .eq("organization_id", organizationId)
+      .eq("is_deleted", false)
       .gte("payment_date", startDate)
       .lte("payment_date", endDate);
 
     const paymentsByMethod: Record<string, number> = {};
-    payments?.forEach(p => {
+    payments?.forEach((p) => {
       paymentsByMethod[p.payment_method] = (paymentsByMethod[p.payment_method] || 0) + p.amount;
     });
 
     // By branch
     const revenueByBranch: Record<string, number> = {};
-    invoices?.forEach(inv => {
-      revenueByBranch[inv.branch_id || "unknown"] = (revenueByBranch[inv.branch_id || "unknown"] || 0) + inv.total_amount;
+    invoices?.forEach((inv) => {
+      revenueByBranch[inv.branch_id || "unknown"] =
+        (revenueByBranch[inv.branch_id || "unknown"] || 0) + inv.total_amount;
     });
 
     // Top clients by revenue
     const clientRevenue: Record<string, number> = {};
-    invoices?.forEach(inv => {
+    invoices?.forEach((inv) => {
       clientRevenue[inv.client_id] = (clientRevenue[inv.client_id] || 0) + inv.total_amount;
     });
 
@@ -136,32 +141,28 @@ export async function GET(request: NextRequest) {
 
     // Trend data - by day
     const revenueTrend: Record<string, number> = {};
-    invoices?.forEach(inv => {
+    invoices?.forEach((inv) => {
       const date = inv.invoice_date;
       revenueTrend[date] = (revenueTrend[date] || 0) + inv.total_amount;
     });
 
     // Status distribution
     const statusDistribution: Record<string, number> = {};
-    invoices?.forEach(inv => {
+    invoices?.forEach((inv) => {
       statusDistribution[inv.status] = (statusDistribution[inv.status] || 0) + 1;
     });
 
-    const avgInvoiceValue = invoices && invoices.length > 0
-      ? totalRevenue / invoices.length
-      : 0;
+    const avgInvoiceValue = invoices && invoices.length > 0 ? totalRevenue / invoices.length : 0;
 
     // Log the report
-    await supabase
-      .from("report_audit_logs")
-      .insert({
-        organization_id: organizationId,
-        user_id: user.id,
-        report_type: "financial",
-        action: "generated",
-        filters,
-        row_count: invoices?.length || 0,
-      });
+    await supabase.from("report_audit_logs").insert({
+      organization_id: organizationId,
+      user_id: user.id,
+      report_type: "financial",
+      action: "generated",
+      filters,
+      row_count: invoices?.length || 0,
+    });
 
     return NextResponse.json({
       data: {
@@ -181,9 +182,6 @@ export async function GET(request: NextRequest) {
     });
   } catch (error) {
     console.error("Error fetching financial report:", error);
-    return NextResponse.json(
-      { error: "Internal server error" },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }

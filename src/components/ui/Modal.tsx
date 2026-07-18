@@ -1,7 +1,10 @@
 "use client";
 
-import { ReactNode, useEffect } from "react";
+import { ReactNode } from "react";
+import * as Dialog from "@radix-ui/react-dialog";
 import { X } from "lucide-react";
+import { cn } from "@/shared/utils/cn";
+import { ICON_SIZE, ICON_STROKE_WIDTH } from "@/shared/constants/icons";
 
 interface ModalProps {
   isOpen: boolean;
@@ -14,6 +17,12 @@ interface ModalProps {
   closeOnBackdropClick?: boolean;
 }
 
+const sizeClasses = {
+  sm: "max-w-sm",
+  md: "max-w-md",
+  lg: "max-w-lg",
+};
+
 export function Modal({
   isOpen,
   onClose,
@@ -24,78 +33,58 @@ export function Modal({
   closeOnEscape = true,
   closeOnBackdropClick = true,
 }: ModalProps) {
-  useEffect(() => {
-    const handleEscape = (e: KeyboardEvent) => {
-      if (closeOnEscape && e.key === "Escape") {
-        onClose();
-      }
-    };
-
-    if (isOpen) {
-      document.addEventListener("keydown", handleEscape);
-      document.body.style.overflow = "hidden";
-    }
-
-    return () => {
-      document.removeEventListener("keydown", handleEscape);
-      document.body.style.overflow = "auto";
-    };
-  }, [isOpen, closeOnEscape, onClose]);
-
-  if (!isOpen) return null;
-
-  const sizeClasses = {
-    sm: "max-w-sm",
-    md: "max-w-md",
-    lg: "max-w-lg",
-  };
-
   return (
-    <>
-      {/* Backdrop */}
-      <div
-        className="fixed inset-0 bg-black/50 z-40 transition-opacity"
-        onClick={() => closeOnBackdropClick && onClose()}
-        role="presentation"
-      />
-
-      {/* Modal */}
-      <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-        <div
-          className={`
-            bg-white dark:bg-gray-800 rounded-lg shadow-xl
-            ${sizeClasses[size]} w-full max-h-[90vh] flex flex-col
-            animate-in fade-in zoom-in-95 duration-200
-          `}
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="modal-title"
+    <Dialog.Root
+      open={isOpen}
+      onOpenChange={(open) => {
+        if (!open) onClose();
+      }}
+    >
+      <Dialog.Portal>
+        <Dialog.Overlay
+          className={cn(
+            "fixed inset-0 z-(--z-modal) bg-black/50",
+            "data-[state=open]:animate-in data-[state=closed]:animate-out",
+            "data-[state=open]:fade-in-0 data-[state=closed]:fade-out-0"
+          )}
+        />
+        <Dialog.Content
+          onEscapeKeyDown={(e) => {
+            if (!closeOnEscape) e.preventDefault();
+          }}
+          onPointerDownOutside={(e) => {
+            if (!closeOnBackdropClick) e.preventDefault();
+          }}
+          className={cn(
+            "fixed left-1/2 top-1/2 z-(--z-modal) flex max-h-[90vh] w-[calc(100vw-2rem)] -translate-x-1/2 -translate-y-1/2 flex-col rounded-lg bg-card text-card-foreground shadow-xl",
+            "data-[state=open]:animate-in data-[state=closed]:animate-out",
+            "data-[state=open]:fade-in-0 data-[state=closed]:fade-out-0",
+            "data-[state=open]:zoom-in-95 data-[state=closed]:zoom-out-95",
+            "duration-200",
+            sizeClasses[size]
+          )}
         >
-          {/* Header */}
-          <div className="flex items-center justify-between p-6 border-b border-gray-200 dark:border-gray-700">
-            <h2 id="modal-title" className="text-lg font-semibold text-gray-900 dark:text-white">
-              {title}
-            </h2>
-            <button
-              onClick={onClose}
-              className="text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 rounded"
-              aria-label="Close modal"
-            >
-              <X className="w-5 h-5" />
-            </button>
+          <div className="flex items-center justify-between border-b border-border p-6">
+            <Dialog.Title className="text-lg font-semibold text-foreground">{title}</Dialog.Title>
+            <Dialog.Close asChild>
+              <button
+                className="rounded text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                aria-label="Close modal"
+              >
+                <X className={ICON_SIZE.md} strokeWidth={ICON_STROKE_WIDTH} />
+              </button>
+            </Dialog.Close>
           </div>
 
-          {/* Content */}
           <div className="flex-1 overflow-y-auto p-6">{children}</div>
 
-          {/* Footer */}
           {actions && (
-            <div className="flex items-center justify-end gap-3 p-6 border-t border-gray-200 dark:border-gray-700">
+            <div className="flex items-center justify-end gap-3 border-t border-border p-6">
               {actions}
             </div>
           )}
-        </div>
-      </div>
-    </>
+        </Dialog.Content>
+      </Dialog.Portal>
+    </Dialog.Root>
   );
 }

@@ -9,28 +9,61 @@ export const dynamic = "force-dynamic";
 export async function GET(request: NextRequest) {
   try {
     const supabase = await createServerClient();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+
+    if (!user) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    const { data: userData } = await supabase
+      .from("users")
+      .select("organization_id")
+      .eq("id", user.id)
+      .single();
+
+    if (!userData || !userData.organization_id) {
+      return NextResponse.json(
+        { error: "User not found or not assigned to organization" },
+        { status: 404 }
+      );
+    }
 
     const { searchParams } = new URL(request.url);
     const page = parseInt(searchParams.get("page") || "1");
     const limit = parseInt(searchParams.get("limit") || "20");
+    const search = searchParams.get("search") || "";
     const status = searchParams.get("status");
     const priority = searchParams.get("priority");
     const clientId = searchParams.get("client_id");
     const branchId = searchParams.get("branch_id");
+    const employeeId = searchParams.get("employeeId");
 
     const offset = (page - 1) * limit;
 
     let query = supabase
       .from("care_plans")
-      .select("*, clients:client_id(id, first_name, last_name), employees:primary_caregiver_id(id, first_name, last_name)", { count: "exact" })
+      .select(
+        "*, client:client_id(id, first_name, last_name), primary_caregiver:primary_caregiver_id(id, first_name, last_name)",
+        { count: "exact" }
+      )
+      .eq("organization_id", userData.organization_id)
       .eq("is_deleted", false)
       .order("created_at", { ascending: false })
       .range(offset, offset + limit - 1);
 
-    if (status) query = query.eq("status", status);
+    if (search) query = query.ilike("title", `%${search}%`);
     if (priority) query = query.eq("priority", priority);
     if (clientId) query = query.eq("client_id", clientId);
     if (branchId) query = query.eq("branch_id", branchId);
+    if (employeeId) query = query.eq("primary_caregiver_id", employeeId);
+    if (status && status !== "all") {
+      query = query.eq("status", status);
+    } else if (status !== "all") {
+      // Default view excludes archived plans, matching Employees/Clients.
+      query = query.neq("status", "archived");
+    }
 
     const { data, error, count } = await query;
 
@@ -97,14 +130,20 @@ export async function POST(request: NextRequest) {
 
     if (error) throw error;
 
-    await (supabase.from("audit_logs") as any).insert([{
-      organization_id: user.organization_id,
-      action: "CREATE",
-      entity_type: "care_plan",
-      entity_id: data[0]?.id,
-      performed_by_id: userId,
-      changes: JSON.stringify(careplanData),
-    }]);
+    // audit_logs' real columns are event_type/resource_type/resource_id
+    // (see migration 001) - entity_type/performed_by_id don't exist on
+    // this table. Matches the convention already fixed for clients.
+    await (supabase.from("audit_logs") as any).insert([
+      {
+        organization_id: user.organization_id,
+        user_id: userId,
+        event_type: "CREATE",
+        resource_type: "care_plans",
+        resource_id: data[0]?.id,
+        action: "created",
+        changes: { new_values: careplanData },
+      },
+    ]);
 
     return NextResponse.json(data[0], { status: 201 });
   } catch (error) {

@@ -1,15 +1,24 @@
 import { ReactNode } from "react";
 import { ChevronUp, ChevronDown } from "lucide-react";
+import { cn } from "@/shared/utils/cn";
+import { ICON_SIZE, ICON_STROKE_WIDTH } from "@/shared/constants/icons";
 
 interface TableProps {
   children: ReactNode;
   className?: string;
+  /** Keeps the header row pinned while the table body scrolls. */
+  stickyHeader?: boolean;
 }
 
-export function Table({ children, className = "" }: TableProps) {
+export function Table({ children, className = "", stickyHeader = false }: TableProps) {
   return (
-    <div className="overflow-x-auto rounded-lg border border-gray-200 dark:border-gray-700">
-      <table className={`w-full text-sm text-left text-gray-900 dark:text-white ${className}`}>
+    <div
+      className={cn(
+        "overflow-x-auto rounded-lg border border-border",
+        stickyHeader && "max-h-[70vh] overflow-y-auto"
+      )}
+    >
+      <table className={cn("w-full text-sm text-left text-foreground", className)}>
         {children}
       </table>
     </div>
@@ -18,11 +27,14 @@ export function Table({ children, className = "" }: TableProps) {
 
 interface TableHeadProps {
   children: ReactNode;
+  sticky?: boolean;
 }
 
-export function TableHead({ children }: TableHeadProps) {
+export function TableHead({ children, sticky = false }: TableHeadProps) {
   return (
-    <thead className="bg-gray-50 dark:bg-gray-700 border-b border-gray-200 dark:border-gray-600">
+    <thead
+      className={cn("bg-muted/40 border-b border-border", sticky && "sticky top-0 z-10 bg-card")}
+    >
       {children}
     </thead>
   );
@@ -43,7 +55,7 @@ export function TableBody({
     return (
       <tbody>
         <tr>
-          <td colSpan={99} className="px-6 py-8 text-center text-gray-500 dark:text-gray-400">
+          <td colSpan={99} className="px-6 py-8 text-center text-muted-foreground">
             {emptyMessage}
           </td>
         </tr>
@@ -58,16 +70,21 @@ interface TableRowProps {
   children: ReactNode;
   hover?: boolean;
   onClick?: () => void;
+  /** Marks the row as selected (e.g. via a leading checkbox column) - a
+   *  subtle tint + left accent, for modules that build bulk actions on top
+   *  of this primitive. */
+  selected?: boolean;
 }
 
-export function TableRow({ children, hover = true, onClick }: TableRowProps) {
+export function TableRow({ children, hover = true, onClick, selected = false }: TableRowProps) {
   return (
     <tr
-      className={`
-        border-b border-gray-200 dark:border-gray-700
-        ${hover ? "hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors" : ""}
-        ${onClick ? "cursor-pointer" : ""}
-      `}
+      className={cn(
+        "border-b border-border last:border-0 transition-colors",
+        hover && "hover:bg-accent/50",
+        onClick && "cursor-pointer",
+        selected && "bg-primary/5 border-l-2 border-l-primary hover:bg-primary/8"
+      )}
       onClick={onClick}
     >
       {children}
@@ -92,17 +109,27 @@ export function TableHeaderCell({
 }: TableHeaderCellProps) {
   return (
     <th
-      className={`px-6 py-3 font-semibold text-gray-900 dark:text-white ${className}`}
+      className={cn(
+        "px-6 py-4 text-xs font-semibold uppercase tracking-wide text-muted-foreground",
+        className
+      )}
       onClick={sortable ? onSort : undefined}
       role={sortable ? "button" : undefined}
       tabIndex={sortable ? 0 : undefined}
     >
       <div
-        className={`flex items-center gap-2 ${sortable ? "cursor-pointer hover:text-blue-600" : ""}`}
+        className={cn(
+          "flex items-center gap-1.5",
+          sortable && "cursor-pointer hover:text-foreground select-none"
+        )}
       >
         {children}
-        {sortable && sortDirection === "asc" && <ChevronUp className="w-4 h-4" />}
-        {sortable && sortDirection === "desc" && <ChevronDown className="w-4 h-4" />}
+        {sortable && sortDirection === "asc" && (
+          <ChevronUp className={ICON_SIZE.sm} strokeWidth={ICON_STROKE_WIDTH} />
+        )}
+        {sortable && sortDirection === "desc" && (
+          <ChevronDown className={ICON_SIZE.sm} strokeWidth={ICON_STROKE_WIDTH} />
+        )}
       </div>
     </th>
   );
@@ -114,12 +141,12 @@ interface TableCellProps {
   align?: "left" | "center" | "right";
 }
 
-export function TableCell({ children, className = "", align = "left" }: TableCellProps) {
-  const alignClass = {
-    left: "text-left",
-    center: "text-center",
-    right: "text-right",
-  }[align];
+const alignClass = {
+  left: "text-left",
+  center: "text-center",
+  right: "text-right",
+};
 
-  return <td className={`px-6 py-4 ${alignClass} ${className}`}>{children}</td>;
+export function TableCell({ children, className = "", align = "left" }: TableCellProps) {
+  return <td className={cn("px-6 py-5", alignClass[align], className)}>{children}</td>;
 }

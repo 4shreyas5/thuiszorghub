@@ -1,7 +1,9 @@
 "use client";
 
-import { createContext, useContext, useState, useCallback, ReactNode } from "react";
+import { createContext, useContext, useState, useCallback, useEffect, ReactNode } from "react";
 import { AlertCircle, CheckCircle, AlertTriangle, Info, X } from "lucide-react";
+import { cn } from "@/shared/utils/cn";
+import { ICON_SIZE, ICON_STROKE_WIDTH } from "@/shared/constants/icons";
 
 export type ToastType = "success" | "error" | "warning" | "info";
 
@@ -28,19 +30,13 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     setToasts((prev) => prev.filter((toast) => toast.id !== id));
   }, []);
 
-  const addToast = useCallback(
-    (toast: Omit<Toast, "id">) => {
-      const id = Date.now().toString();
-      const newToast = { ...toast, id };
-      setToasts((prev) => [...prev, newToast]);
-
-      if (toast.duration !== Infinity) {
-        const duration = toast.duration || 5000;
-        setTimeout(() => removeToast(id), duration);
-      }
-    },
-    [removeToast]
-  );
+  const addToast = useCallback((toast: Omit<Toast, "id">) => {
+    const id = Date.now().toString();
+    setToasts((prev) => [...prev, { ...toast, id }]);
+    // Lifecycle (auto-dismiss timer + exit animation) is owned by
+    // ToastItem itself, so both the timeout path and the manual-close
+    // path go through the same animate-out-then-remove sequence.
+  }, []);
 
   return (
     <ToastContext.Provider value={{ toasts, addToast, removeToast }}>
@@ -63,43 +59,73 @@ interface ToastItemProps {
   onRemove: (id: string) => void;
 }
 
-function ToastItem({ toast, onRemove }: ToastItemProps) {
-  const icons = {
-    success: <CheckCircle className="w-5 h-5 text-green-600 dark:text-green-400" />,
-    error: <AlertCircle className="w-5 h-5 text-red-600 dark:text-red-400" />,
-    warning: <AlertTriangle className="w-5 h-5 text-yellow-600 dark:text-yellow-400" />,
-    info: <Info className="w-5 h-5 text-blue-600 dark:text-blue-400" />,
-  };
+const TOAST_ICON: Record<ToastType, typeof CheckCircle> = {
+  success: CheckCircle,
+  error: AlertCircle,
+  warning: AlertTriangle,
+  info: Info,
+};
 
-  const bgClasses = {
-    success: "bg-green-50 dark:bg-green-900/20 border-green-200 dark:border-green-800",
-    error: "bg-red-50 dark:bg-red-900/20 border-red-200 dark:border-red-800",
-    warning: "bg-yellow-50 dark:bg-yellow-900/20 border-yellow-200 dark:border-yellow-800",
-    info: "bg-blue-50 dark:bg-blue-900/20 border-blue-200 dark:border-blue-800",
-  };
+const TOAST_ICON_CLASSES: Record<ToastType, string> = {
+  success: "text-success",
+  error: "text-danger",
+  warning: "text-warning",
+  info: "text-info",
+};
+
+const TOAST_BG_CLASSES: Record<ToastType, string> = {
+  success: "bg-success/10 border-success/20",
+  error: "bg-danger/10 border-danger/20",
+  warning: "bg-warning/10 border-warning/20",
+  info: "bg-info/10 border-info/20",
+};
+
+const EXIT_DURATION_MS = 200;
+
+function ToastItem({ toast, onRemove }: ToastItemProps) {
+  const Icon = TOAST_ICON[toast.type];
+  const [leaving, setLeaving] = useState(false);
+
+  const dismiss = useCallback(() => setLeaving(true), []);
+
+  useEffect(() => {
+    if (toast.duration === Infinity) return;
+    const timer = setTimeout(dismiss, toast.duration || 5000);
+    return () => clearTimeout(timer);
+  }, [toast.duration, dismiss]);
+
+  useEffect(() => {
+    if (!leaving) return;
+    const timer = setTimeout(() => onRemove(toast.id), EXIT_DURATION_MS);
+    return () => clearTimeout(timer);
+  }, [leaving, onRemove, toast.id]);
 
   return (
     <div
-      className={`
-        flex items-start gap-3 p-4 rounded-lg border
-        ${bgClasses[toast.type]}
-        animate-in fade-in slide-in-from-top-4 duration-300
-      `}
+      className={cn(
+        "flex items-start gap-3 rounded-lg border p-4 shadow-sm",
+        leaving
+          ? "animate-out fade-out slide-out-to-right-4 duration-200"
+          : "animate-in fade-in slide-in-from-top-4 duration-300",
+        TOAST_BG_CLASSES[toast.type]
+      )}
       role="alert"
     >
-      <div className="flex-shrink-0 mt-0.5">{icons[toast.type]}</div>
+      <div className={cn("mt-0.5 shrink-0", TOAST_ICON_CLASSES[toast.type])}>
+        <Icon className={ICON_SIZE.md} strokeWidth={ICON_STROKE_WIDTH} />
+      </div>
       <div className="flex-1">
-        <p className="font-medium text-gray-900 dark:text-white">{toast.message}</p>
+        <p className="font-medium text-foreground">{toast.message}</p>
         {toast.description && (
-          <p className="text-sm text-gray-700 dark:text-gray-300 mt-1">{toast.description}</p>
+          <p className="mt-1 text-sm text-muted-foreground">{toast.description}</p>
         )}
       </div>
       <button
-        onClick={() => onRemove(toast.id)}
-        className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors focus:outline-none focus:ring-2 focus:ring-offset-2 rounded"
+        onClick={dismiss}
+        className="rounded text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         aria-label="Close notification"
       >
-        <X className="w-4 h-4" />
+        <X className={ICON_SIZE.sm} strokeWidth={ICON_STROKE_WIDTH} />
       </button>
     </div>
   );
@@ -112,7 +138,10 @@ interface ToastContainerProps {
 
 function ToastContainer({ toasts, onRemove }: ToastContainerProps) {
   return (
-    <div className="fixed bottom-4 right-4 z-[60] space-y-3 max-w-sm pointer-events-none">
+    <div
+      className="pointer-events-none fixed bottom-4 right-4 z-(--z-toast) max-w-sm space-y-3"
+      aria-live="polite"
+    >
       {toasts.map((toast) => (
         <div key={toast.id} className="pointer-events-auto">
           <ToastItem toast={toast} onRemove={onRemove} />

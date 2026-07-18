@@ -1,18 +1,18 @@
 ﻿/* eslint-disable @typescript-eslint/no-explicit-any */
 import { createServerClient } from "@/core/database/server";
 import { NextRequest, NextResponse } from "next/server";
+import { checkVisitConflicts } from "@/core/scheduling/conflicts";
 
 export async function POST(request: NextRequest) {
   try {
     const supabase = await createServerClient();
     const body = await request.json();
 
-    const {
-      visitId,
-      employeeId
-    } = body;
+    const { visitId, employeeId } = body;
 
-    const { data: { user } } = await supabase.auth.getUser();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
     if (!user) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
@@ -27,27 +27,18 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Visit not found" }, { status: 404 });
     }
 
-    // Check conflicts
-    const { data: conflicts } = await (supabase.from("scheduled_visits") as any)
-      .select("*")
-      .eq("employee_id", employeeId)
-      .eq("scheduled_date", visit.scheduled_date)
-      .eq("is_deleted", false);
-
-    const hasConflict = conflicts?.some((v: any) => {
-      const visitStart = new Date(`2000-01-01T${v.start_time}`);
-      const visitEnd = new Date(`2000-01-01T${v.end_time}`);
-      const newStart = new Date(`2000-01-01T${visit.start_time}`);
-      const newEnd = new Date(`2000-01-01T${visit.end_time}`);
-
-      return !(newEnd <= visitStart || newStart >= visitEnd);
+    // Check conflicts - shared helper, see src/core/scheduling/conflicts.ts
+    const conflicts = await checkVisitConflicts(supabase, {
+      employeeId,
+      clientId: visit.client_id,
+      scheduledDate: visit.scheduled_date,
+      startTime: visit.start_time,
+      endTime: visit.end_time,
+      excludeVisitId: visitId,
     });
 
-    if (hasConflict) {
-      return NextResponse.json(
-        { error: "Employee has conflicting visit" },
-        { status: 409 }
-      );
+    if (conflicts.some((c) => c.type === "DOUBLE_BOOKING")) {
+      return NextResponse.json({ error: "Employee has conflicting visit" }, { status: 409 });
     }
 
     // Assign employee
@@ -55,7 +46,7 @@ export async function POST(request: NextRequest) {
       .update({
         employee_id: employeeId,
         status: "assigned",
-        updated_at: new Date().toISOString()
+        updated_at: new Date().toISOString(),
       })
       .eq("id", visitId);
 
@@ -69,7 +60,7 @@ export async function POST(request: NextRequest) {
       resource_type: "scheduled_visits",
       resource_id: visitId,
       action: "assigned",
-      changes: { employee_id: employeeId }
+      changes: { employee_id: employeeId },
     });
 
     return NextResponse.json({ success: true, visitId, employeeId });
@@ -87,10 +78,7 @@ export async function GET(request: NextRequest) {
     const branchId = searchParams.get("branchId");
 
     if (!visitId || !branchId) {
-      return NextResponse.json(
-        { error: "Missing required parameters" },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: "Missing required parameters" }, { status: 400 });
     }
 
     // Get visit details
@@ -120,7 +108,7 @@ export async function GET(request: NextRequest) {
         const score = {
           employee,
           score: 50,
-          reasons: [] as string[]
+          reasons: [] as string[],
         };
 
         // Check if employee is available
@@ -188,14 +176,10 @@ export async function GET(request: NextRequest) {
       suggestions: suggestions
         .filter((s) => s !== null)
         .sort((a, b) => (b?.score || 0) - (a?.score || 0))
-        .slice(0, 5)
+        .slice(0, 5),
     });
   } catch (error) {
     console.error("Error getting assignment suggestions:", error);
-    return NextResponse.json(
-      { error: "Failed to get suggestions" },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "Failed to get suggestions" }, { status: 500 });
   }
 }
-

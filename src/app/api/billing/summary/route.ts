@@ -8,8 +8,11 @@ export async function GET(request: NextRequest) {
     const searchParams = request.nextUrl.searchParams;
     const date = searchParams.get("date") || new Date().toISOString().split("T")[0];
     const period = searchParams.get("period") || "month"; // day, month, year
+    const clientId = searchParams.get("clientId") || undefined;
 
-    const { data: { user } } = await supabase.auth.getUser();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
     if (!user) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
@@ -23,7 +26,7 @@ export async function GET(request: NextRequest) {
     const orgId = userData?.organization_id;
     const currentDate = new Date(date);
     let startDate: Date;
-    let endDate = currentDate;
+    const endDate = currentDate;
 
     // Calculate period boundaries
     if (period === "day") {
@@ -36,13 +39,16 @@ export async function GET(request: NextRequest) {
       startDate = currentDate;
     }
 
-    // Try to get cached financial summary first
-    const { data: cachedSummary } = await (supabase.from("financial_summary") as any)
-      .select("*")
-      .eq("organization_id", orgId)
-      .eq("summary_date", date)
-      .eq("is_deleted", false)
-      .single();
+    // Try to get cached financial summary first - the cache is org-wide, so
+    // a client-scoped request always falls through to the live aggregation.
+    const { data: cachedSummary } = clientId
+      ? { data: null }
+      : await (supabase.from("financial_summary") as any)
+          .select("*")
+          .eq("organization_id", orgId)
+          .eq("summary_date", date)
+          .eq("is_deleted", false)
+          .single();
 
     if (cachedSummary) {
       return NextResponse.json({
@@ -70,31 +76,45 @@ export async function GET(request: NextRequest) {
     const todayStr = new Date().toISOString().split("T")[0];
 
     // Get today's billable hours
-    const { data: todayTimesheets } = await (supabase.from("timesheets") as any)
+    let todayTimesheetsQuery = (supabase.from("timesheets") as any)
       .select("billable_hours")
       .eq("organization_id", orgId)
       .eq("visit_date", todayStr)
       .eq("is_deleted", false);
+    if (clientId) todayTimesheetsQuery = todayTimesheetsQuery.eq("client_id", clientId);
+    const { data: todayTimesheets } = await todayTimesheetsQuery;
 
-    const billableHoursToday = todayTimesheets?.reduce((sum: number, ts: any) => sum + (parseFloat(ts.billable_hours) || 0), 0) || 0;
+    const billableHoursToday =
+      todayTimesheets?.reduce(
+        (sum: number, ts: any) => sum + (parseFloat(ts.billable_hours) || 0),
+        0
+      ) || 0;
 
     // Get month's billable hours
-    const { data: monthTimesheets } = await (supabase.from("timesheets") as any)
+    let monthTimesheetsQuery = (supabase.from("timesheets") as any)
       .select("billable_hours")
       .eq("organization_id", orgId)
       .gte("visit_date", startDateStr)
       .lte("visit_date", endDateStr)
       .eq("is_deleted", false);
+    if (clientId) monthTimesheetsQuery = monthTimesheetsQuery.eq("client_id", clientId);
+    const { data: monthTimesheets } = await monthTimesheetsQuery;
 
-    const billableHoursMonth = monthTimesheets?.reduce((sum: number, ts: any) => sum + (parseFloat(ts.billable_hours) || 0), 0) || 0;
+    const billableHoursMonth =
+      monthTimesheets?.reduce(
+        (sum: number, ts: any) => sum + (parseFloat(ts.billable_hours) || 0),
+        0
+      ) || 0;
 
     // Get invoices for the period
-    const { data: invoices } = await (supabase.from("invoices") as any)
+    let invoicesQuery = (supabase.from("invoices") as any)
       .select("total_amount, status, due_date, paid_amount, invoice_date")
       .eq("organization_id", orgId)
       .gte("invoice_date", startDateStr)
       .lte("invoice_date", endDateStr)
       .eq("is_deleted", false);
+    if (clientId) invoicesQuery = invoicesQuery.eq("client_id", clientId);
+    const { data: invoices } = await invoicesQuery;
 
     let revenueToday = 0;
     let revenueMonth = 0;

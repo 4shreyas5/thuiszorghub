@@ -30,7 +30,9 @@ export async function GET(request: NextRequest) {
       invoiceId: searchParams.get("invoiceId") || undefined,
       status: searchParams.get("status") || undefined,
       paymentMethod: searchParams.get("paymentMethod") || undefined,
-      startDate: searchParams.get("startDate") ? new Date(searchParams.get("startDate")!) : undefined,
+      startDate: searchParams.get("startDate")
+        ? new Date(searchParams.get("startDate")!)
+        : undefined,
       endDate: searchParams.get("endDate") ? new Date(searchParams.get("endDate")!) : undefined,
       limit: parseInt(searchParams.get("limit") || "20"),
       offset: parseInt(searchParams.get("offset") || "0"),
@@ -40,7 +42,9 @@ export async function GET(request: NextRequest) {
 
     let query = supabase
       .from("payments")
-      .select("*,invoice:invoices(invoice_number,client:clients(name))", { count: "exact" })
+      .select("*,invoice:invoices(invoice_number,client:clients(first_name,last_name))", {
+        count: "exact",
+      })
       .eq("organization_id", userData.organization_id)
       .eq("is_deleted", false)
       .order("payment_date", { ascending: false })
@@ -124,6 +128,7 @@ export async function POST(request: NextRequest) {
       .select("*")
       .eq("id", validatedData.invoiceId)
       .eq("organization_id", userData.organization_id)
+      .eq("is_deleted", false)
       .single();
 
     if (!invoice) {
@@ -158,7 +163,8 @@ export async function POST(request: NextRequest) {
     // Update invoice balance
     const newPaidAmount = invoice.paid_amount + validatedData.amount;
     const newRemainingBalance = Math.max(0, invoice.total_amount - newPaidAmount);
-    const newStatus = newRemainingBalance === 0 ? "paid" : (newPaidAmount > 0 ? "partially_paid" : invoice.status);
+    const newStatus =
+      newRemainingBalance === 0 ? "paid" : newPaidAmount > 0 ? "partially_paid" : invoice.status;
 
     await supabase
       .from("invoices")
@@ -175,10 +181,11 @@ export async function POST(request: NextRequest) {
     await supabase.from("audit_logs").insert({
       organization_id: userData.organization_id,
       user_id: user.id,
+      event_type: "CREATE",
       resource_type: "payments",
       resource_id: payment.id,
-      action: "create",
-      changes: payment,
+      action: "created",
+      changes: { new_values: payment },
     });
 
     return NextResponse.json(payment, { status: 201 });

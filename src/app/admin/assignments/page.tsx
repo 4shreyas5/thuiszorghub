@@ -1,13 +1,43 @@
- 
 "use client";
 
 import { useState, useCallback, useEffect } from "react";
-import { PageHeader } from "@/components/admin/PageHeader";
-import { Badge } from "@/components/ui/Badge";
-import { Button } from "@/components/ui/Button";
-import { Skeleton } from "@/components/ui/Skeleton";
 import Link from "next/link";
-import { ChevronLeft, ChevronRight, Trash2, ChevronDown } from "lucide-react";
+import { useRouter } from "next/navigation";
+import {
+  Search,
+  Link2,
+  AlertTriangle,
+  MoreHorizontal,
+  Eye,
+  Pencil,
+  Archive,
+  RotateCcw,
+} from "lucide-react";
+import { PageHeader } from "@/components/admin/PageHeader";
+import { StatusBadge, Badge } from "@/components/ui/Badge";
+import { Input } from "@/components/ui/Input";
+import { Select } from "@/components/ui/Select";
+import { Button } from "@/components/ui/Button";
+import { Card } from "@/components/ui/Card";
+import { Skeleton } from "@/components/ui/Skeleton";
+import { EmptyState } from "@/components/ui/EmptyState";
+import { Pagination } from "@/components/ui/Pagination";
+import {
+  Table,
+  TableHead,
+  TableBody,
+  TableRow,
+  TableHeaderCell,
+  TableCell,
+} from "@/components/ui/Table";
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+} from "@/components/ui/DropdownMenu";
+import { useDebounce } from "@/hooks/useDebounce";
+import { ICON_SIZE, ICON_STROKE_WIDTH } from "@/shared/constants/icons";
 
 interface PaginationData {
   page: number;
@@ -23,13 +53,43 @@ type AssignmentRow = {
   assigned_from: string;
   assigned_until: string | null;
   is_primary: boolean;
+  is_deleted: boolean;
   employee?: { first_name: string; last_name: string };
   client?: { first_name: string; last_name: string };
+  branch?: { id: string; name: string };
 };
 
+interface Option {
+  id: string;
+  first_name: string;
+  last_name: string;
+}
+
+interface Branch {
+  id: string;
+  name: string;
+}
+
+const STATUS_OPTIONS = [
+  { value: "all", label: "All statuses" },
+  { value: "active", label: "Active" },
+  { value: "inactive", label: "Ended" },
+  { value: "archived", label: "Archived" },
+];
+
+function assignmentStatus(row: AssignmentRow): "active" | "inactive" | "archived" | "pending" {
+  if (row.is_deleted) return "archived";
+  const today = new Date().toISOString().split("T")[0];
+  if (row.assigned_from > today) return "pending";
+  if (row.assigned_until && row.assigned_until < today) return "inactive";
+  return "active";
+}
+
 export default function AssignmentsPage() {
+  const router = useRouter();
   const [assignments, setAssignments] = useState<AssignmentRow[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [pagination, setPagination] = useState<PaginationData>({
     page: 1,
     limit: 20,
@@ -37,60 +97,96 @@ export default function AssignmentsPage() {
     pages: 1,
   });
 
+  const [search, setSearch] = useState("");
   const [status, setStatus] = useState("all");
+  const [branch, setBranch] = useState("");
+  const [employeeId, setEmployeeId] = useState("");
+  const [clientId, setClientId] = useState("");
   const [sortBy, setSortBy] = useState("assigned_from");
-  const [sortOrder, setSortOrder] = useState("desc");
+  const [sortOrder, setSortOrder] = useState<"asc" | "desc">("desc");
+
+  const [branches, setBranches] = useState<Branch[]>([]);
+  const [employees, setEmployees] = useState<Option[]>([]);
+  const [clients, setClients] = useState<Option[]>([]);
+
+  const debouncedSearch = useDebounce(search, 500);
 
   const fetchAssignments = useCallback(
     async (page = 1) => {
       try {
         setLoading(true);
+        setLoadError(null);
         const params = new URLSearchParams({
           page: page.toString(),
           limit: pagination.limit.toString(),
+          search: debouncedSearch,
           status,
+          branch,
+          employeeId,
+          clientId,
           sortBy,
           sortOrder,
         });
 
         const response = await fetch(`/api/assignments?${params}`);
-        if (!response.ok) throw new Error("Failed to fetch assignments");
-
         const data = await response.json();
+        if (!response.ok) throw new Error(data.error || "Failed to fetch assignments");
+
         setAssignments(data.assignments);
         setPagination(data.pagination);
       } catch (error) {
-        console.error("Error fetching assignments:", error);
+        setLoadError(error instanceof Error ? error.message : "Failed to load assignments");
       } finally {
         setLoading(false);
       }
     },
-    [pagination.limit, status, sortBy, sortOrder]
+    [pagination.limit, debouncedSearch, status, branch, employeeId, clientId, sortBy, sortOrder]
   );
 
   useEffect(() => {
-    fetchAssignments(1);
-  }, [status, sortBy, sortOrder, fetchAssignments]);
+    // Deferred to a microtask so the fetch trigger isn't a synchronous setState call in the effect body.
+    queueMicrotask(() => {
+      fetchAssignments(1);
+    });
+  }, [debouncedSearch, status, branch, employeeId, clientId, sortBy, sortOrder, fetchAssignments]);
 
   useEffect(() => {
-    if (pagination.page > 1) {
-      fetchAssignments(pagination.page);
-    }
+    queueMicrotask(() => {
+      if (pagination.page > 1) {
+        fetchAssignments(pagination.page);
+      }
+    });
   }, [pagination.page, fetchAssignments]);
 
-  const handleArchive = async (id: string) => {
-    if (!confirm("Are you sure you want to archive this assignment?")) return;
+  useEffect(() => {
+    fetch("/api/branches?page=1&limit=100")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => d?.data && setBranches(d.data))
+      .catch(() => {});
+    fetch("/api/employees?page=1&limit=200")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => d?.employees && setEmployees(d.employees))
+      .catch(() => {});
+    fetch("/api/clients?page=1&limit=200")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => d?.clients && setClients(d.clients))
+      .catch(() => {});
+  }, []);
 
+  const setStatusFor = async (row: AssignmentRow, action: "archive" | "activate") => {
     try {
-      const response = await fetch(`/api/assignments/${id}`, {
-        method: "DELETE",
-      });
-
-      if (!response.ok) throw new Error("Failed to archive assignment");
-
-      await fetchAssignments();
+      const response =
+        action === "archive"
+          ? await fetch(`/api/assignments/${row.id}`, { method: "DELETE" })
+          : await fetch(`/api/assignments/${row.id}`, {
+              method: "PUT",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ is_deleted: false }),
+            });
+      if (!response.ok) throw new Error("Failed to update assignment");
+      await fetchAssignments(pagination.page);
     } catch (error) {
-      console.error("Error archiving assignment:", error);
+      console.error("Error updating assignment status:", error);
     }
   };
 
@@ -98,220 +194,236 @@ export default function AssignmentsPage() {
     setPagination((p) => ({ ...p, page: newPage }));
   };
 
-  const getStatusBadgeColor = (assignment: AssignmentRow) => {
-    const today = new Date().toISOString().split("T")[0];
-    const from = new Date(assignment.assigned_from).toISOString().split("T")[0];
-    const until = assignment.assigned_until
-      ? new Date(assignment.assigned_until).toISOString().split("T")[0]
-      : null;
-
-    if (from > today) return "warning";
-    if (until && until < today) return "default";
-    return "success";
-  };
-
-  const getStatusLabel = (assignment: AssignmentRow) => {
-    const today = new Date().toISOString().split("T")[0];
-    const from = new Date(assignment.assigned_from).toISOString().split("T")[0];
-    const until = assignment.assigned_until
-      ? new Date(assignment.assigned_until).toISOString().split("T")[0]
-      : null;
-
-    if (from > today) return "Pending";
-    if (until && until < today) return "Ended";
-    return "Active";
-  };
+  const hasFilters = !!(search || status !== "all" || branch || employeeId || clientId);
 
   return (
     <div className="space-y-6">
       <PageHeader
         title="Assignments"
-        description="Manage employee and client assignments"
-        action={{
-          label: "+ New Assignment",
-          href: "/admin/assignments/new",
-        }}
+        description="Which caregivers are assigned to which clients."
+        action={{ label: "New Assignment", href: "/admin/assignments/new" }}
       />
 
-      {/* Filters */}
-      <div className="bg-white dark:bg-gray-800 rounded-lg p-6 space-y-4">
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <div className="relative">
-            <select
-              value={status}
-              onChange={(e) => setStatus(e.target.value)}
-              className="w-full px-4 py-2 rounded-lg border appearance-none transition-colors bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-offset-0 border-gray-300 dark:border-gray-600 focus:ring-blue-500"
-            >
-              <option value="all">All Status</option>
-              <option value="active">Active</option>
-              <option value="inactive">Ended</option>
-            </select>
-            <ChevronDown className="absolute right-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" />
+      <Card bordered padding="md" className="space-y-4">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">
+          <div className="lg:col-span-2">
+            <Input
+              placeholder="Search by employee or client name..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              icon={<Search className={ICON_SIZE.sm} strokeWidth={ICON_STROKE_WIDTH} />}
+            />
           </div>
-
-          <div className="relative">
-            <select
+          <Select
+            value={status}
+            onChange={(e) => setStatus(e.target.value)}
+            options={STATUS_OPTIONS}
+          />
+          <Select
+            value={branch}
+            onChange={(e) => setBranch(e.target.value)}
+            options={[
+              { value: "", label: "All branches" },
+              ...branches.map((b) => ({ value: b.id, label: b.name })),
+            ]}
+          />
+          <Select
+            value={employeeId}
+            onChange={(e) => setEmployeeId(e.target.value)}
+            options={[
+              { value: "", label: "All employees" },
+              ...employees.map((e) => ({ value: e.id, label: `${e.first_name} ${e.last_name}` })),
+            ]}
+          />
+        </div>
+        <div className="flex justify-end gap-3">
+          <div className="w-56">
+            <Select
+              value={clientId}
+              onChange={(e) => setClientId(e.target.value)}
+              options={[
+                { value: "", label: "All clients" },
+                ...clients.map((c) => ({ value: c.id, label: `${c.first_name} ${c.last_name}` })),
+              ]}
+            />
+          </div>
+          <div className="w-44">
+            <Select
               value={sortBy}
               onChange={(e) => setSortBy(e.target.value)}
-              className="w-full px-4 py-2 rounded-lg border appearance-none transition-colors bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-offset-0 border-gray-300 dark:border-gray-600 focus:ring-blue-500"
-            >
-              <option value="assigned_from">Start Date</option>
-              <option value="assigned_until">End Date</option>
-              <option value="is_primary">Primary</option>
-            </select>
-            <ChevronDown className="absolute right-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" />
+              options={[
+                { value: "assigned_from", label: "Sort: Start Date" },
+                { value: "assigned_until", label: "Sort: End Date" },
+                { value: "is_primary", label: "Sort: Primary" },
+              ]}
+            />
           </div>
-
-          <div className="relative">
-            <select
+          <div className="w-36">
+            <Select
               value={sortOrder}
-              onChange={(e) => setSortOrder(e.target.value)}
-              className="w-full px-4 py-2 rounded-lg border appearance-none transition-colors bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-offset-0 border-gray-300 dark:border-gray-600 focus:ring-blue-500"
-            >
-              <option value="asc">Ascending</option>
-              <option value="desc">Descending</option>
-            </select>
-            <ChevronDown className="absolute right-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" />
+              onChange={(e) => setSortOrder(e.target.value as "asc" | "desc")}
+              options={[
+                { value: "asc", label: "Ascending" },
+                { value: "desc", label: "Descending" },
+              ]}
+            />
           </div>
         </div>
-      </div>
+      </Card>
 
-      {/* Table */}
-      <div className="bg-white dark:bg-gray-800 rounded-lg overflow-hidden">
-        {loading ? (
-          <div className="p-6 space-y-4">
-            {[...Array(5)].map((_, i) => (
-              <Skeleton key={i} className="h-12 w-full" />
-            ))}
-          </div>
-        ) : assignments.length === 0 ? (
-          <div className="p-12 text-center">
-            <p className="text-gray-600 dark:text-gray-400">No assignments found</p>
-          </div>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full">
-              <thead className="bg-gray-50 dark:bg-gray-700 border-b dark:border-gray-600">
-                <tr>
-                  <th className="px-6 py-3 text-left text-sm font-semibold text-gray-900 dark:text-white">
-                    Employee
-                  </th>
-                  <th className="px-6 py-3 text-left text-sm font-semibold text-gray-900 dark:text-white">
-                    Client
-                  </th>
-                  <th className="px-6 py-3 text-left text-sm font-semibold text-gray-900 dark:text-white">
-                    Primary
-                  </th>
-                  <th className="px-6 py-3 text-left text-sm font-semibold text-gray-900 dark:text-white">
-                    Start Date
-                  </th>
-                  <th className="px-6 py-3 text-left text-sm font-semibold text-gray-900 dark:text-white">
-                    End Date
-                  </th>
-                  <th className="px-6 py-3 text-left text-sm font-semibold text-gray-900 dark:text-white">
-                    Status
-                  </th>
-                  <th className="px-6 py-3 text-left text-sm font-semibold text-gray-900 dark:text-white">
-                    Actions
-                  </th>
-                </tr>
-              </thead>
-              <tbody className="divide-y dark:divide-gray-700">
-                {assignments.map((assignment) => (
-                  <tr
-                    key={assignment.id}
-                    className="hover:bg-gray-50 dark:hover:bg-gray-700 transition"
-                  >
-                    <td className="px-6 py-4 text-sm">
-                      <Link
-                        href={`/admin/employees/${assignment.employee_id}`}
-                        className="font-medium text-blue-600 hover:underline"
-                      >
-                        {assignment.employee?.first_name} {assignment.employee?.last_name}
-                      </Link>
-                    </td>
-                    <td className="px-6 py-4 text-sm">
-                      <Link
-                        href={`/admin/clients/${assignment.client_id}`}
-                        className="font-medium text-blue-600 hover:underline"
-                      >
-                        {assignment.client?.first_name} {assignment.client?.last_name}
-                      </Link>
-                    </td>
-                    <td className="px-6 py-4 text-sm">
-                      <Badge variant={assignment.is_primary ? "primary" : "default"}>
-                        {assignment.is_primary ? "Yes" : "No"}
-                      </Badge>
-                    </td>
-                    <td className="px-6 py-4 text-sm text-gray-600 dark:text-gray-400">
-                      {new Date(assignment.assigned_from).toLocaleDateString("nl-NL")}
-                    </td>
-                    <td className="px-6 py-4 text-sm text-gray-600 dark:text-gray-400">
-                      {assignment.assigned_until
-                        ? new Date(assignment.assigned_until).toLocaleDateString("nl-NL")
-                        : "-"}
-                    </td>
-                    <td className="px-6 py-4 text-sm">
-                      <Badge variant={getStatusBadgeColor(assignment)}>
-                        {getStatusLabel(assignment)}
-                      </Badge>
-                    </td>
-                    <td className="px-6 py-4 text-sm flex gap-2">
-                      <Link
-                        href={`/admin/assignments/${assignment.id}`}
-                        className="text-blue-600 hover:text-blue-700"
-                      >
-                        Edit
-                      </Link>
-                      <button
-                        onClick={() => handleArchive(assignment.id)}
-                        className="text-red-600 hover:text-red-700 flex gap-1 items-center"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                        Archive
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
-
-      {/* Pagination */}
-      {pagination.pages > 1 && (
-        <div className="flex items-center justify-between bg-white dark:bg-gray-800 rounded-lg p-4">
-          <div className="text-sm text-gray-600 dark:text-gray-400">
-            Showing {(pagination.page - 1) * pagination.limit + 1} to{" "}
-            {Math.min(pagination.page * pagination.limit, pagination.total)} of{" "}
-            {pagination.total} assignments
-          </div>
-          <div className="flex gap-2">
-            <Button
-              onClick={() => handlePageChange(pagination.page - 1)}
-              disabled={pagination.page === 1}
-              variant="secondary"
-            >
-              <ChevronLeft className="w-4 h-4" />
-            </Button>
-            {[...Array(pagination.pages)].map((_, i) => (
-              <Button
-                key={i + 1}
-                onClick={() => handlePageChange(i + 1)}
-                variant={pagination.page === i + 1 ? "primary" : "secondary"}
-              >
-                {i + 1}
+      {loading ? (
+        <Card bordered padding="md" className="space-y-3">
+          {[...Array(5)].map((_, i) => (
+            <Skeleton key={i} className="h-12 w-full" />
+          ))}
+        </Card>
+      ) : loadError ? (
+        <Card bordered padding="md">
+          <EmptyState
+            tone="error"
+            icon={AlertTriangle}
+            title="Couldn't load assignments"
+            description={loadError}
+            action={
+              <Button variant="outline" onClick={() => fetchAssignments(pagination.page)}>
+                Retry
               </Button>
-            ))}
-            <Button
-              onClick={() => handlePageChange(pagination.page + 1)}
-              disabled={pagination.page === pagination.pages}
-              variant="secondary"
-            >
-              <ChevronRight className="w-4 h-4" />
-            </Button>
-          </div>
+            }
+          />
+        </Card>
+      ) : assignments.length === 0 ? (
+        <Card bordered padding="md">
+          <EmptyState
+            icon={hasFilters ? Search : Link2}
+            title={hasFilters ? "No matching assignments" : "No assignments yet"}
+            description={
+              hasFilters
+                ? "Try a different search term or clearing a filter."
+                : "Assign a caregiver to a client to start coordinating their care."
+            }
+            action={
+              !hasFilters && (
+                <Button asChild>
+                  <Link href="/admin/assignments/new">New Assignment</Link>
+                </Button>
+              )
+            }
+          />
+        </Card>
+      ) : (
+        <div className="space-y-4">
+          <Table>
+            <TableHead>
+              <TableRow hover={false}>
+                <TableHeaderCell>Employee</TableHeaderCell>
+                <TableHeaderCell>Client</TableHeaderCell>
+                <TableHeaderCell>Branch</TableHeaderCell>
+                <TableHeaderCell>Primary</TableHeaderCell>
+                <TableHeaderCell>Status</TableHeaderCell>
+                <TableHeaderCell>Start Date</TableHeaderCell>
+                <TableHeaderCell>End Date</TableHeaderCell>
+                <TableHeaderCell className="text-right">Actions</TableHeaderCell>
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              {assignments.map((row) => (
+                <TableRow key={row.id}>
+                  <TableCell>
+                    <Link
+                      href={`/admin/employees/${row.employee_id}`}
+                      className="font-medium text-foreground hover:text-primary hover:underline"
+                    >
+                      {row.employee ? `${row.employee.first_name} ${row.employee.last_name}` : "—"}
+                    </Link>
+                  </TableCell>
+                  <TableCell>
+                    <Link
+                      href={`/admin/clients/${row.client_id}`}
+                      className="font-medium text-foreground hover:text-primary hover:underline"
+                    >
+                      {row.client ? `${row.client.first_name} ${row.client.last_name}` : "—"}
+                    </Link>
+                  </TableCell>
+                  <TableCell className="text-muted-foreground">{row.branch?.name || "—"}</TableCell>
+                  <TableCell>
+                    {row.is_primary ? (
+                      <Badge variant="primary" size="sm">
+                        Primary
+                      </Badge>
+                    ) : (
+                      <span className="text-muted-foreground">—</span>
+                    )}
+                  </TableCell>
+                  <TableCell>
+                    <StatusBadge status={assignmentStatus(row)} size="sm" />
+                  </TableCell>
+                  <TableCell className="text-muted-foreground">
+                    {new Date(row.assigned_from).toLocaleDateString("nl-NL")}
+                  </TableCell>
+                  <TableCell className="text-muted-foreground">
+                    {row.assigned_until
+                      ? new Date(row.assigned_until).toLocaleDateString("nl-NL")
+                      : "Ongoing"}
+                  </TableCell>
+                  <TableCell align="right">
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-8 w-8 p-0"
+                          aria-label="Actions"
+                        >
+                          <MoreHorizontal
+                            className={ICON_SIZE.sm}
+                            strokeWidth={ICON_STROKE_WIDTH}
+                          />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end">
+                        <DropdownMenuItem
+                          onSelect={() => router.push(`/admin/assignments/${row.id}`)}
+                        >
+                          <Eye className={ICON_SIZE.sm} strokeWidth={ICON_STROKE_WIDTH} />
+                          View
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          onSelect={() => router.push(`/admin/assignments/${row.id}?edit=true`)}
+                        >
+                          <Pencil className={ICON_SIZE.sm} strokeWidth={ICON_STROKE_WIDTH} />
+                          Edit
+                        </DropdownMenuItem>
+                        {row.is_deleted ? (
+                          <DropdownMenuItem onSelect={() => setStatusFor(row, "activate")}>
+                            <RotateCcw className={ICON_SIZE.sm} strokeWidth={ICON_STROKE_WIDTH} />
+                            Activate
+                          </DropdownMenuItem>
+                        ) : (
+                          <DropdownMenuItem onSelect={() => setStatusFor(row, "archive")}>
+                            <Archive className={ICON_SIZE.sm} strokeWidth={ICON_STROKE_WIDTH} />
+                            Archive
+                          </DropdownMenuItem>
+                        )}
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+
+          {pagination.pages > 1 && (
+            <div className="flex items-center justify-between">
+              <p className="text-sm text-muted-foreground">
+                {pagination.total} assignment{pagination.total === 1 ? "" : "s"}
+              </p>
+              <Pagination
+                page={pagination.page}
+                pageCount={pagination.pages}
+                onPageChange={handlePageChange}
+              />
+            </div>
+          )}
         </div>
       )}
     </div>
