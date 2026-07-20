@@ -374,7 +374,7 @@ export default function EmployeeDetailPage() {
               <h1 className="text-2xl font-semibold tracking-tight text-foreground">{name}</h1>
               <StatusBadge
                 status={employee.status}
-                label={employee.status.replace("_", " ")}
+                label={employee.status?.replace("_", " ")}
                 className="capitalize"
               />
             </div>

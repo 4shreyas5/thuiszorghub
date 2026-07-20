@@ -1,17 +1,29 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { createServerClient } from "@/core/database/server";
 import { NextRequest, NextResponse } from "next/server";
 import { recordMedicationSchema } from "@/core/validation/visit-execution";
+import { requireAuth, requirePermission, writeAuditLog } from "@/core/permissions/server";
 
-export async function GET(
-  _request: NextRequest,
-  { params }: { params: Promise<{ id: string }> }
-) {
+// No permission gate beyond org membership - read-only medication log.
+export async function GET(_request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const auth = await requireAuth();
+    if (!auth.ok) return auth.response;
+    const { context } = auth;
     const { id } = await params;
-    const supabase = await createServerClient();
 
-    const { data: medications } = await (supabase.from("visit_medication_records") as any)
+    // Verify the visit belongs to the caller's own org before returning
+    // anything tied to it.
+    const { data: visit } = await (context.supabase.from("scheduled_visits") as any)
+      .select("id")
+      .eq("id", id)
+      .eq("organization_id", context.organizationId)
+      .single();
+
+    if (!visit) {
+      return NextResponse.json({ error: "Visit not found" }, { status: 404 });
+    }
+
+    const { data: medications } = await (context.supabase.from("visit_medication_records") as any)
       .select("*")
       .eq("scheduled_visit_id", id)
       .eq("is_deleted", false)
@@ -24,26 +36,25 @@ export async function GET(
   }
 }
 
-export async function POST(
-  request: NextRequest,
-  { params }: { params: Promise<{ id: string }> }
-) {
+export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const auth = await requireAuth();
+    if (!auth.ok) return auth.response;
+    const { context } = auth;
     const { id } = await params;
-    const supabase = await createServerClient();
-    const { data: { user } } = await supabase.auth.getUser();
 
-    if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
+    const permError = await requirePermission(context, "visit.complete");
+    if (permError) return permError;
 
+    const supabase = context.supabase;
     const body = await request.json();
     const validatedData = recordMedicationSchema.parse(body);
 
-    // Get visit
+    // Get visit - scoped to the caller's own org.
     const { data: visit } = await (supabase.from("scheduled_visits") as any)
       .select("organization_id")
       .eq("id", id)
+      .eq("organization_id", context.organizationId)
       .single();
 
     if (!visit) {
@@ -54,6 +65,7 @@ export async function POST(
     const { data: execution } = await (supabase.from("visit_executions") as any)
       .select("id")
       .eq("scheduled_visit_id", id)
+      .eq("organization_id", context.organizationId)
       .in("status", ["started", "in_progress"])
       .eq("is_deleted", false)
       .single();
@@ -63,7 +75,9 @@ export async function POST(
     }
 
     // Record medication
-    const { data: medication, error: medError } = await (supabase.from("visit_medication_records") as any)
+    const { data: medication, error: medError } = await (
+      supabase.from("visit_medication_records") as any
+    )
       .insert({
         visit_execution_id: execution.id,
         scheduled_visit_id: id,
@@ -72,7 +86,7 @@ export async function POST(
         administered_dosage: validatedData.administered_dosage || null,
         status: validatedData.status,
         administered_at: validatedData.status === "given" ? new Date().toISOString() : null,
-        administered_by_id: validatedData.status === "given" ? user.id : null,
+        administered_by_id: validatedData.status === "given" ? context.userId : null,
         not_given_reason: validatedData.not_given_reason || null,
         notes: validatedData.notes || null,
       })
@@ -81,15 +95,12 @@ export async function POST(
 
     if (medError) throw medError;
 
-    // Log to audit logs
-    await (supabase.from("audit_logs") as any).insert({
-      organization_id: visit.organization_id,
-      user_id: user.id,
-      event_type: "CREATE",
-      resource_type: "visit_medication_records",
-      resource_id: medication.id,
+    await writeAuditLog(context, {
+      eventType: "CREATE",
+      resourceType: "visit_medication_records",
+      resourceId: medication.id,
       action: "medication_recorded",
-      changes: { medication: validatedData.medication_name, status: validatedData.status }
+      changes: { medication: validatedData.medication_name, status: validatedData.status },
     });
 
     return NextResponse.json(medication, { status: 201 });

@@ -293,7 +293,7 @@ export default function InvoiceDetailPage() {
             <div className="flex items-center gap-2">
               <StatusBadge
                 status={invoice.status}
-                label={invoice.status.replace(/_/g, " ")}
+                label={invoice.status?.replace(/_/g, " ")}
                 size="sm"
               />
               <Select

@@ -1,5 +1,5 @@
-import { createServerClient } from "@/core/database/server";
 import { NextRequest, NextResponse } from "next/server";
+import { requireAuth, requirePermission } from "@/core/permissions/server";
 
 interface BranchFilters {
   startDate?: string | undefined;
@@ -19,26 +19,15 @@ interface BranchMetricValue {
 
 export async function GET(request: NextRequest) {
   try {
-    const supabase = await createServerClient();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
+    const auth = await requireAuth();
+    if (!auth.ok) return auth.response;
+    const { context } = auth;
+    const supabase = context.supabase;
 
-    if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
+    const permError = await requirePermission(context, "report.view");
+    if (permError) return permError;
 
-    const { data: userData } = await supabase
-      .from("users")
-      .select("organization_id")
-      .eq("id", user.id)
-      .single();
-
-    if (!userData) {
-      return NextResponse.json({ error: "User not found" }, { status: 404 });
-    }
-
-    const organizationId = userData.organization_id;
+    const organizationId = context.organizationId;
 
     const searchParams = request.nextUrl.searchParams;
     const filters: BranchFilters = {
@@ -59,45 +48,54 @@ export async function GET(request: NextRequest) {
       .eq("organization_id", organizationId)
       .eq("is_deleted", false);
     if (filters.branchId) branchQuery = branchQuery.eq("id", filters.branchId);
-    const { data: branches } = await branchQuery;
 
-    const { data: employees } = await supabase
-      .from("employees")
-      .select("id, branch_id, hourly_rate, is_active")
-      .eq("organization_id", organizationId)
-      .eq("is_deleted", false);
-
-    const { data: clients } = await supabase
-      .from("clients")
-      .select("id, branch_id, is_active")
-      .eq("organization_id", organizationId)
-      .eq("is_deleted", false);
-
-    const { data: visits } = await supabase
-      .from("scheduled_visits")
-      .select("id, branch_id, scheduled_date")
-      .eq("organization_id", organizationId)
-      .eq("is_deleted", false)
-      .gte("scheduled_date", startDate)
-      .lte("scheduled_date", endDate);
-
-    const { data: invoices } = await supabase
-      .from("invoices")
-      .select("id, branch_id, total_amount, invoice_date")
-      .eq("organization_id", organizationId)
-      .eq("is_deleted", false)
-      .gte("invoice_date", startDate)
-      .lte("invoice_date", endDate);
-
-    // timesheets has no branch_id of its own - derive it from the
-    // employee's branch (migration 008_create_billing_system.sql:197-224).
-    const { data: timesheets } = await supabase
-      .from("timesheets")
-      .select("employee_id, billable_hours")
-      .eq("organization_id", organizationId)
-      .eq("is_deleted", false)
-      .gte("visit_date", startDate)
-      .lte("visit_date", endDate);
+    // None of these six queries depend on another's result (branch scoping
+    // for employees/clients/visits/invoices/timesheets is done client-side
+    // below via branch_id, not by pre-filtering on the branches query) - run
+    // them concurrently instead of six sequential round trips.
+    const [
+      { data: branches },
+      { data: employees },
+      { data: clients },
+      { data: visits },
+      { data: invoices },
+      { data: timesheets },
+    ] = await Promise.all([
+      branchQuery,
+      supabase
+        .from("employees")
+        .select("id, branch_id, hourly_rate, is_active")
+        .eq("organization_id", organizationId)
+        .eq("is_deleted", false),
+      supabase
+        .from("clients")
+        .select("id, branch_id, is_active")
+        .eq("organization_id", organizationId)
+        .eq("is_deleted", false),
+      supabase
+        .from("scheduled_visits")
+        .select("id, branch_id, scheduled_date")
+        .eq("organization_id", organizationId)
+        .eq("is_deleted", false)
+        .gte("scheduled_date", startDate)
+        .lte("scheduled_date", endDate),
+      supabase
+        .from("invoices")
+        .select("id, branch_id, total_amount, invoice_date")
+        .eq("organization_id", organizationId)
+        .eq("is_deleted", false)
+        .gte("invoice_date", startDate)
+        .lte("invoice_date", endDate),
+      // timesheets has no branch_id of its own - derive it from the
+      // employee's branch (migration 008_create_billing_system.sql:197-224).
+      supabase
+        .from("timesheets")
+        .select("employee_id, billable_hours")
+        .eq("organization_id", organizationId)
+        .eq("is_deleted", false)
+        .gte("visit_date", startDate)
+        .lte("visit_date", endDate),
+    ]);
 
     const employeeBranch = new Map((employees || []).map((e) => [e.id, e.branch_id]));
 
@@ -135,7 +133,7 @@ export async function GET(request: NextRequest) {
     // Log the report
     await supabase.from("report_audit_logs").insert({
       organization_id: organizationId,
-      user_id: user.id,
+      user_id: context.userId,
       report_type: "branch",
       action: "generated",
       filters,

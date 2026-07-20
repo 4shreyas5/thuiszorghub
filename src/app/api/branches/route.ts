@@ -1,27 +1,16 @@
-import { createServerClient } from "@/core/database/server";
 import { NextRequest, NextResponse } from "next/server";
+import { requireAuth, requirePermission } from "@/core/permissions/server";
 
+// Deliberately no permission gate on GET beyond org membership: branches
+// power the branch-filter dropdown on Employees/Clients/Visits/Assignments/
+// Reports and several forms, used by every role for everyday work - only
+// the actual branch management endpoints (POST/PUT/DELETE) are gated.
 export async function GET(request: NextRequest) {
   try {
-    const supabase = await createServerClient();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-
-    if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
-    const { data: userData, error: userError } = await supabase
-      .from("users")
-      .select("organization_id")
-      .eq("id", user.id)
-      .single();
-
-    if (userError || !userData) {
-      console.error("[branches GET] Error fetching user:", userError);
-      return NextResponse.json({ error: "User not found" }, { status: 404 });
-    }
+    const auth = await requireAuth();
+    if (!auth.ok) return auth.response;
+    const { context } = auth;
+    const supabase = context.supabase;
 
     const searchParams = request.nextUrl.searchParams;
     const page = parseInt(searchParams.get("page") || "1");
@@ -35,7 +24,7 @@ export async function GET(request: NextRequest) {
     } = await supabase
       .from("branches")
       .select("*, manager:manager_user_id(id, first_name, last_name, email)", { count: "exact" })
-      .eq("organization_id", userData.organization_id)
+      .eq("organization_id", context.organizationId)
       .eq("is_deleted", false)
       .range(offset, offset + limit - 1)
       .order("name", { ascending: true });
@@ -59,25 +48,13 @@ export async function GET(request: NextRequest) {
 
 export async function POST(request: NextRequest) {
   try {
-    const supabase = await createServerClient();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
+    const auth = await requireAuth();
+    if (!auth.ok) return auth.response;
+    const { context } = auth;
+    const supabase = context.supabase;
 
-    if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
-    const { data: userData, error: userError } = await supabase
-      .from("users")
-      .select("organization_id")
-      .eq("id", user.id)
-      .single();
-
-    if (userError || !userData) {
-      console.error("[branches POST] Error fetching user:", userError);
-      return NextResponse.json({ error: "User not found" }, { status: 404 });
-    }
+    const permError = await requirePermission(context, "branch.create");
+    if (permError) return permError;
 
     const body = await request.json();
     const {
@@ -100,7 +77,7 @@ export async function POST(request: NextRequest) {
     const { data: branch, error } = await supabase
       .from("branches")
       .insert({
-        organization_id: userData.organization_id,
+        organization_id: context.organizationId,
         name,
         code: code || null,
         email: email || null,

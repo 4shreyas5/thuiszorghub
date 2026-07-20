@@ -1,5 +1,5 @@
-import { createServerClient } from "@/core/database/server";
 import { NextRequest, NextResponse } from "next/server";
+import { requireAuth } from "@/core/permissions/server";
 
 /**
  * Sibling of the download route - same lookup/storage-fetch logic, but
@@ -9,30 +9,16 @@ import { NextRequest, NextResponse } from "next/server";
 export async function GET(_request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   try {
-    const supabase = await createServerClient();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-
-    if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
-    const { data: userData } = await supabase
-      .from("users")
-      .select("organization_id")
-      .eq("id", user.id)
-      .single();
-
-    if (!userData) {
-      return NextResponse.json({ error: "User not found" }, { status: 404 });
-    }
+    const auth = await requireAuth();
+    if (!auth.ok) return auth.response;
+    const { context } = auth;
+    const supabase = context.supabase;
 
     const { data: document, error } = await supabase
       .from("documents")
       .select("*")
       .eq("id", id)
-      .eq("organization_id", userData.organization_id)
+      .eq("organization_id", context.organizationId)
       .eq("is_deleted", false)
       .single();
 
@@ -49,9 +35,9 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
     }
 
     await supabase.from("document_audit_logs").insert({
-      organization_id: userData.organization_id,
+      organization_id: context.organizationId,
       document_id: id,
-      user_id: user.id,
+      user_id: context.userId,
       action: "preview",
     });
 

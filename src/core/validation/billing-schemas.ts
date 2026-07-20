@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import { z } from "zod";
 
 // ============================================================================
 // INVOICE SCHEMAS
@@ -7,35 +7,41 @@ import { z } from 'zod';
 export const CreateInvoiceSchema = z.object({
   clientId: z.string().uuid(),
   branchId: z.string().uuid().optional(),
-  invoiceDate: z.date().optional(),
-  dueDate: z.date(),
-  periodStart: z.date().optional(),
-  periodEnd: z.date().optional(),
+  invoiceDate: z.coerce.date().optional(),
+  dueDate: z.coerce.date(),
+  periodStart: z.coerce.date().optional(),
+  periodEnd: z.coerce.date().optional(),
   billingProfileId: z.string().uuid().optional(),
   templateId: z.string().uuid().optional(),
   notes: z.string().max(1000).optional(),
-  items: z.array(z.object({
-    visitId: z.string().uuid().optional(),
-    description: z.string().min(1).max(255),
-    quantity: z.number().positive(),
-    unitPrice: z.number().nonnegative(),
-    rateType: z.string().optional(),
-    vatPercentage: z.number().min(0).max(100).optional(),
-  })).min(1),
+  items: z
+    .array(
+      z.object({
+        visitId: z.string().uuid().optional(),
+        description: z.string().min(1).max(255),
+        quantity: z.number().positive(),
+        unitPrice: z.number().nonnegative(),
+        rateType: z.string().optional(),
+        vatPercentage: z.number().min(0).max(100).optional(),
+      })
+    )
+    .min(1),
 });
 
 export const UpdateInvoiceStatusSchema = z.object({
-  status: z.enum(['draft', 'pending', 'sent', 'partially_paid', 'paid', 'overdue', 'cancelled']),
+  status: z.enum(["draft", "pending", "sent", "partially_paid", "paid", "overdue", "cancelled"]),
   changedReason: z.string().optional(),
   notes: z.string().optional(),
 });
 
 export const InvoiceFilterSchema = z.object({
-  status: z.enum(['draft', 'pending', 'sent', 'partially_paid', 'paid', 'overdue', 'cancelled']).optional(),
+  status: z
+    .enum(["draft", "pending", "sent", "partially_paid", "paid", "overdue", "cancelled"])
+    .optional(),
   clientId: z.string().uuid().optional(),
   branchId: z.string().uuid().optional(),
-  startDate: z.date().optional(),
-  endDate: z.date().optional(),
+  startDate: z.coerce.date().optional(),
+  endDate: z.coerce.date().optional(),
   search: z.string().optional(),
   limit: z.number().int().positive().default(20),
   offset: z.number().int().nonnegative().default(0),
@@ -48,8 +54,8 @@ export const InvoiceFilterSchema = z.object({
 export const CreatePaymentSchema = z.object({
   invoiceId: z.string().uuid(),
   amount: z.number().positive(),
-  paymentDate: z.date(),
-  paymentMethod: z.enum(['bank_transfer', 'cash', 'card', 'sepa', 'manual_entry']),
+  paymentDate: z.coerce.date(),
+  paymentMethod: z.enum(["bank_transfer", "cash", "card", "sepa", "manual_entry"]),
   referenceNumber: z.string().optional(),
   bankAccount: z.string().optional(),
   transactionId: z.string().optional(),
@@ -58,10 +64,10 @@ export const CreatePaymentSchema = z.object({
 
 export const PaymentFilterSchema = z.object({
   invoiceId: z.string().uuid().optional(),
-  status: z.enum(['pending', 'completed', 'failed', 'refunded']).optional(),
-  paymentMethod: z.enum(['bank_transfer', 'cash', 'card', 'sepa', 'manual_entry']).optional(),
-  startDate: z.date().optional(),
-  endDate: z.date().optional(),
+  status: z.enum(["pending", "completed", "failed", "refunded"]).optional(),
+  paymentMethod: z.enum(["bank_transfer", "cash", "card", "sepa", "manual_entry"]).optional(),
+  startDate: z.coerce.date().optional(),
+  endDate: z.coerce.date().optional(),
   limit: z.number().int().positive().default(20),
   offset: z.number().int().nonnegative().default(0),
 });
@@ -75,7 +81,7 @@ export const CreateBillingProfileSchema = z.object({
   description: z.string().max(500).optional(),
   defaultHourlyRate: z.number().positive(),
   weekendRateMultiplier: z.number().positive().default(1.25),
-  holidayRateMultiplier: z.number().positive().default(1.50),
+  holidayRateMultiplier: z.number().positive().default(1.5),
   nightRateMultiplier: z.number().positive().default(1.25),
   vatPercentage: z.number().min(0).max(100).default(21),
   paymentTermsDays: z.number().int().positive().default(30),
@@ -115,8 +121,8 @@ export const CreateMunicipalityContractSchema = z.object({
   weekendRate: z.number().positive().optional(),
   holidayRate: z.number().positive().optional(),
   nightRate: z.number().positive().optional(),
-  startDate: z.date(),
-  endDate: z.date().optional(),
+  startDate: z.coerce.date(),
+  endDate: z.coerce.date().optional(),
   branchId: z.string().uuid().optional(),
   notes: z.string().optional(),
 });
@@ -129,7 +135,7 @@ export const CreateTimesheetSchema = z.object({
   visitId: z.string().uuid(),
   employeeId: z.string().uuid(),
   clientId: z.string().uuid(),
-  visitDate: z.date(),
+  visitDate: z.coerce.date(),
   startTime: z.string().optional(),
   endTime: z.string().optional(),
   totalHours: z.number().nonnegative().optional(),
@@ -148,8 +154,8 @@ export const CreateTimesheetSchema = z.object({
 export const TimesheetFilterSchema = z.object({
   employeeId: z.string().uuid().optional(),
   clientId: z.string().uuid().optional(),
-  startDate: z.date().optional(),
-  endDate: z.date().optional(),
+  startDate: z.coerce.date().optional(),
+  endDate: z.coerce.date().optional(),
   isBilled: z.boolean().optional(),
   limit: z.number().int().positive().default(20),
   offset: z.number().int().nonnegative().default(0),
@@ -160,8 +166,8 @@ export const TimesheetFilterSchema = z.object({
 // ============================================================================
 
 export const ReportFilterSchema = z.object({
-  startDate: z.date().optional(),
-  endDate: z.date().optional(),
+  startDate: z.coerce.date().optional(),
+  endDate: z.coerce.date().optional(),
   branchId: z.string().uuid().optional(),
   employeeId: z.string().uuid().optional(),
   clientId: z.string().uuid().optional(),
@@ -172,17 +178,17 @@ export const ReportFilterSchema = z.object({
 });
 
 export const ReportExportSchema = z.object({
-  format: z.enum(['csv', 'excel', 'pdf']),
+  format: z.enum(["csv", "excel", "pdf"]),
   reportType: z.enum([
-    'employee_hours',
-    'client_hours',
-    'visit_summary',
-    'revenue',
-    'outstanding_payments',
-    'invoice_status',
-    'branch_performance',
-    'care_plan_status',
-    'scheduling_summary',
+    "employee_hours",
+    "client_hours",
+    "visit_summary",
+    "revenue",
+    "outstanding_payments",
+    "invoice_status",
+    "branch_performance",
+    "care_plan_status",
+    "scheduling_summary",
   ]),
   filters: ReportFilterSchema.optional(),
 });

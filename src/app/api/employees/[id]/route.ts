@@ -1,18 +1,21 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { createServerClient } from "@/core/database/server";
 import { NextRequest, NextResponse } from "next/server";
 import { updateEmployeeSchema } from "@/core/validation/employee";
+import { requireAuth, requirePermission, writeAuditLog } from "@/core/permissions/server";
 
+// No permission gate beyond org membership - see employees/route.ts.
 export async function GET(_request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
-    const supabase = await createServerClient();
+    const auth = await requireAuth();
+    if (!auth.ok) return auth.response;
+    const { context } = auth;
     const { id } = await params;
 
     // No is_deleted filter here on purpose: archived employees must stay
     // viewable on their own detail page (they remain in history and stay
     // linked to their past visits/assignments) - only list views default
     // to hiding archived employees.
-    const { data: employee, error } = await (supabase.from("employees") as any)
+    const { data: employee, error } = await (context.supabase.from("employees") as any)
       .select(
         `*,
         branch:branches(id, name),
@@ -22,11 +25,10 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
         unavailability:employee_unavailability(*)`
       )
       .eq("id", id)
+      .eq("organization_id", context.organizationId)
       .single();
 
-    if (error) throw error;
-
-    if (!employee) {
+    if (error || !employee) {
       return NextResponse.json({ error: "Employee not found" }, { status: 404 });
     }
 
@@ -39,21 +41,13 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
 
 export async function PUT(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
-    const supabase = await createServerClient();
+    const auth = await requireAuth();
+    if (!auth.ok) return auth.response;
+    const { context } = auth;
     const { id } = await params;
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
 
-    if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
-    const { data: userData } = await supabase
-      .from("users")
-      .select("organization_id")
-      .eq("id", user.id)
-      .single();
+    const permError = await requirePermission(context, "employee.update");
+    if (permError) return permError;
 
     const body = await request.json();
     const parsed = updateEmployeeSchema.safeParse(body);
@@ -103,29 +97,29 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
       updatePayload.status = data.is_active ? "active" : "inactive";
     }
 
-    const { data: employee, error } = await (supabase.from("employees") as any)
+    const { data: employee, error } = await (context.supabase.from("employees") as any)
       .update(updatePayload)
       .eq("id", id)
+      .eq("organization_id", context.organizationId)
       .select()
       .single();
 
-    if (error) throw error;
-
-    if (!employee) {
+    // PGRST116 ("no rows returned by .single()") and 22P02 (invalid UUID
+    // syntax) both mean "no such employee" to the caller - a real 404, not
+    // a server error. Any other error (a genuine constraint/column/DB
+    // problem) still falls through as a real 500.
+    if (error?.code === "PGRST116" || error?.code === "22P02" || !employee) {
       return NextResponse.json({ error: "Employee not found" }, { status: 404 });
     }
+    if (error) throw error;
 
-    // Log to audit logs
-    if (userData) {
-      await (supabase.from("audit_logs") as any).insert({
-        organization_id: userData.organization_id,
-        user_id: user.id,
-        action: "update",
-        entity_type: "employees",
-        entity_id: id,
-        changes: { employee },
-      });
-    }
+    await writeAuditLog(context, {
+      eventType: "UPDATE",
+      resourceType: "employees",
+      resourceId: id,
+      action: "updated",
+      changes: { new_values: employee },
+    });
 
     return NextResponse.json(employee);
   } catch (error) {
@@ -139,23 +133,15 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const supabase = await createServerClient();
+    const auth = await requireAuth();
+    if (!auth.ok) return auth.response;
+    const { context } = auth;
     const { id } = await params;
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
 
-    if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
+    const permError = await requirePermission(context, "employee.delete");
+    if (permError) return permError;
 
-    const { data: userData } = await supabase
-      .from("users")
-      .select("organization_id")
-      .eq("id", user.id)
-      .single();
-
-    const { data: employee, error } = await (supabase.from("employees") as any)
+    const { data: employee, error } = await (context.supabase.from("employees") as any)
       .update({
         is_deleted: true,
         deleted_at: new Date().toISOString(),
@@ -163,25 +149,21 @@ export async function DELETE(
         status: "archived",
       })
       .eq("id", id)
+      .eq("organization_id", context.organizationId)
       .select()
       .single();
 
-    if (error) throw error;
-
-    if (!employee) {
+    if (error?.code === "PGRST116" || error?.code === "22P02" || !employee) {
       return NextResponse.json({ error: "Employee not found" }, { status: 404 });
     }
+    if (error) throw error;
 
-    // Log to audit logs
-    if (userData) {
-      await (supabase.from("audit_logs") as any).insert({
-        organization_id: userData.organization_id,
-        user_id: user.id,
-        action: "delete",
-        entity_type: "employees",
-        entity_id: id,
-      });
-    }
+    await writeAuditLog(context, {
+      eventType: "DELETE",
+      resourceType: "employees",
+      resourceId: id,
+      action: "deleted",
+    });
 
     return NextResponse.json(employee);
   } catch (error) {

@@ -1,67 +1,25 @@
-import { createServerClient } from "@/core/database/server";
 import { NextRequest, NextResponse } from "next/server";
-
-async function requireOrgContext(supabase: Awaited<ReturnType<typeof createServerClient>>) {
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user)
-    return { error: NextResponse.json({ error: "Unauthorized" }, { status: 401 }) } as const;
-
-  const { data: userData, error } = await supabase
-    .from("users")
-    .select("organization_id")
-    .eq("id", user.id)
-    .single();
-
-  if (error || !userData) {
-    return { error: NextResponse.json({ error: "User not found" }, { status: 404 }) } as const;
-  }
-
-  return { user, organizationId: userData.organization_id } as const;
-}
-
-async function writeAuditLog(
-  supabase: Awaited<ReturnType<typeof createServerClient>>,
-  params: {
-    organizationId: string;
-    userId: string;
-    action: string;
-    resourceId: string;
-    changes?: unknown;
-  }
-) {
-  try {
-    await supabase.from("audit_logs").insert({
-      organization_id: params.organizationId,
-      user_id: params.userId,
-      event_type: `user.${params.action}`,
-      resource_type: "users",
-      resource_id: params.resourceId,
-      action: params.action,
-      changes: params.changes ?? null,
-    });
-  } catch (auditError) {
-    console.error("[users] Failed to write audit log:", auditError);
-  }
-}
+import { requireAuth, requirePermission, writeAuditLog } from "@/core/permissions/server";
 
 export async function GET(_request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
-    const supabase = await createServerClient();
+    const auth = await requireAuth();
+    if (!auth.ok) return auth.response;
+    const { context } = auth;
     const { id } = await params;
-    const ctx = await requireOrgContext(supabase);
-    if ("error" in ctx) return ctx.error;
+
+    const permError = await requirePermission(context, "user.view");
+    if (permError) return permError;
 
     // branches/user_roles are fetched separately, not embedded - see the
     // comment in /api/users GET for why the bare embed is ambiguous
     // (branches.manager_user_id and user_roles.assigned_by both create a
     // second FK path to/from users).
-    const { data: targetUser, error } = await supabase
+    const { data: targetUser, error } = await context.supabase
       .from("users")
       .select("id, first_name, last_name, email, phone, branch_id, is_active, created_at")
       .eq("id", id)
-      .eq("organization_id", ctx.organizationId)
+      .eq("organization_id", context.organizationId)
       .eq("is_deleted", false)
       .single();
 
@@ -70,9 +28,16 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
     }
 
     const [{ data: userRoles }, branchResult] = await Promise.all([
-      supabase.from("user_roles").select("id, roles(id, name, description)").eq("user_id", id),
+      context.supabase
+        .from("user_roles")
+        .select("id, roles(id, name, description)")
+        .eq("user_id", id),
       targetUser.branch_id
-        ? supabase.from("branches").select("id, name").eq("id", targetUser.branch_id).single()
+        ? context.supabase
+            .from("branches")
+            .select("id, name")
+            .eq("id", targetUser.branch_id)
+            .single()
         : Promise.resolve({ data: null }),
     ]);
 
@@ -91,15 +56,27 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
 
 export async function PUT(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
-    const supabase = await createServerClient();
+    const auth = await requireAuth();
+    if (!auth.ok) return auth.response;
+    const { context } = auth;
     const { id } = await params;
-    const ctx = await requireOrgContext(supabase);
-    if ("error" in ctx) return ctx.error;
+
+    const permError = await requirePermission(context, "user.update");
+    if (permError) return permError;
 
     const body = await request.json();
     const { firstName, lastName, phone, branchId, isActive, roleIds } = body;
 
-    const { data: updatedUser, error } = await supabase
+    // Reassigning roles is a distinct, more sensitive privilege than
+    // editing a user's own profile fields - gated separately so
+    // "user.update" alone can never be used to change what a user is
+    // allowed to do (up to and including granting Organization Owner).
+    if (Array.isArray(roleIds)) {
+      const roleError = await requirePermission(context, "user.manage");
+      if (roleError) return roleError;
+    }
+
+    const { data: updatedUser, error } = await context.supabase
       .from("users")
       .update({
         first_name: firstName ?? undefined,
@@ -110,7 +87,7 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
         updated_at: new Date().toISOString(),
       })
       .eq("id", id)
-      .eq("organization_id", ctx.organizationId)
+      .eq("organization_id", context.organizationId)
       .select()
       .single();
 
@@ -121,26 +98,26 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
 
     // Replace role assignments if provided
     if (Array.isArray(roleIds)) {
-      await supabase.from("user_roles").delete().eq("user_id", id);
+      await context.supabase.from("user_roles").delete().eq("user_id", id);
 
       if (roleIds.length > 0) {
-        const { error: roleError } = await supabase.from("user_roles").insert(
+        const { error: roleError } = await context.supabase.from("user_roles").insert(
           roleIds.map((roleId: string) => ({
             user_id: id,
             role_id: roleId,
-            assigned_by: ctx.user.id,
+            assigned_by: context.userId,
           }))
         );
         if (roleError) console.error("[users PUT] Error assigning roles:", roleError);
       }
     }
 
-    await writeAuditLog(supabase, {
-      organizationId: ctx.organizationId,
-      userId: ctx.user.id,
-      action: "update",
+    await writeAuditLog(context, {
+      eventType: "UPDATE",
+      resourceType: "users",
       resourceId: id,
-      changes: body,
+      action: "updated",
+      changes: { new_values: body },
     });
 
     return NextResponse.json({ data: updatedUser });
@@ -156,16 +133,19 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const supabase = await createServerClient();
+    const auth = await requireAuth();
+    if (!auth.ok) return auth.response;
+    const { context } = auth;
     const { id } = await params;
-    const ctx = await requireOrgContext(supabase);
-    if ("error" in ctx) return ctx.error;
 
-    if (id === ctx.user.id) {
+    const permError = await requirePermission(context, "user.delete");
+    if (permError) return permError;
+
+    if (id === context.userId) {
       return NextResponse.json({ error: "You cannot remove your own account" }, { status: 400 });
     }
 
-    const { data: removedUser, error } = await supabase
+    const { data: removedUser, error } = await context.supabase
       .from("users")
       .update({
         is_deleted: true,
@@ -173,7 +153,7 @@ export async function DELETE(
         deleted_at: new Date().toISOString(),
       })
       .eq("id", id)
-      .eq("organization_id", ctx.organizationId)
+      .eq("organization_id", context.organizationId)
       .select()
       .single();
 
@@ -182,11 +162,11 @@ export async function DELETE(
       return NextResponse.json({ error: "User not found" }, { status: 404 });
     }
 
-    await writeAuditLog(supabase, {
-      organizationId: ctx.organizationId,
-      userId: ctx.user.id,
-      action: "delete",
+    await writeAuditLog(context, {
+      eventType: "DELETE",
+      resourceType: "users",
       resourceId: id,
+      action: "deleted",
     });
 
     return NextResponse.json({ data: removedUser });

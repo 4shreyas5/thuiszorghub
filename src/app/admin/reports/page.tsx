@@ -148,12 +148,16 @@ export default function ReportsPage() {
   const [clients, setClients] = useState<Option[]>([]);
   const [exporting, setExporting] = useState(false);
 
-  const operationalReport = useOperationalReport(filters);
-  const financialReport = useFinancialReport(filters);
-  const employeeReport = useEmployeeReport(filters);
-  const clientReport = useClientReport(filters);
-  const carePlanReport = useCarePlanReport(filters);
-  const branchReport = useBranchReport(filters);
+  // Only the visible tab's report is fetched (and only it triggers the
+  // report_audit_logs write each report route performs) - switching tabs
+  // triggers that tab's first fetch on demand instead of all six firing on
+  // every filter change regardless of which one is being looked at.
+  const operationalReport = useOperationalReport(filters, activeTab === "operational");
+  const financialReport = useFinancialReport(filters, activeTab === "financial");
+  const employeeReport = useEmployeeReport(filters, activeTab === "employees");
+  const clientReport = useClientReport(filters, activeTab === "clients");
+  const carePlanReport = useCarePlanReport(filters, activeTab === "careplans");
+  const branchReport = useBranchReport(filters, activeTab === "branch");
 
   useEffect(() => {
     // Deferred to a microtask so the setFilters call isn't synchronous within the effect body.

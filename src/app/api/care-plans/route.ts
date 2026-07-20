@@ -1,34 +1,19 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { createServerClient } from "@/core/database/server";
 import { NextRequest, NextResponse } from "next/server";
 import { createCarePlanSchema } from "@/core/validation/care-plan";
 import { z } from "zod";
+import { requireAuth, requirePermission, writeAuditLog } from "@/core/permissions/server";
 
 export const dynamic = "force-dynamic";
 
+// No permission gate on GET beyond org membership - list/detail views feed
+// pickers and dashboards used by most roles, matching Employees/Clients.
 export async function GET(request: NextRequest) {
   try {
-    const supabase = await createServerClient();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-
-    if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
-    const { data: userData } = await supabase
-      .from("users")
-      .select("organization_id")
-      .eq("id", user.id)
-      .single();
-
-    if (!userData || !userData.organization_id) {
-      return NextResponse.json(
-        { error: "User not found or not assigned to organization" },
-        { status: 404 }
-      );
-    }
+    const auth = await requireAuth();
+    if (!auth.ok) return auth.response;
+    const { context } = auth;
+    const supabase = context.supabase;
 
     const { searchParams } = new URL(request.url);
     const page = parseInt(searchParams.get("page") || "1");
@@ -48,7 +33,7 @@ export async function GET(request: NextRequest) {
         "*, client:client_id(id, first_name, last_name), primary_caregiver:primary_caregiver_id(id, first_name, last_name)",
         { count: "exact" }
       )
-      .eq("organization_id", userData.organization_id)
+      .eq("organization_id", context.organizationId)
       .eq("is_deleted", false)
       .order("created_at", { ascending: false })
       .range(offset, offset + limit - 1);
@@ -86,28 +71,18 @@ export async function GET(request: NextRequest) {
 
 export async function POST(request: NextRequest) {
   try {
-    const supabase = await createServerClient();
+    const auth = await requireAuth();
+    if (!auth.ok) return auth.response;
+    const { context } = auth;
+
+    const permError = await requirePermission(context, "care_plan.create");
+    if (permError) return permError;
+
     const body = await request.json();
 
     const validated = createCarePlanSchema.parse(body);
 
-    const { data: userData } = await (supabase.auth.getUser() as any);
-    const userId = userData?.user?.id;
-
-    if (!userId) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
-    const { data: user } = await (supabase.from("users") as any)
-      .select("organization_id")
-      .eq("id", userId)
-      .single();
-
-    if (!user) {
-      return NextResponse.json({ error: "User not found" }, { status: 401 });
-    }
-
-    const { data: client } = await (supabase.from("clients") as any)
+    const { data: client } = await (context.supabase.from("clients") as any)
       .select("id, is_deleted")
       .eq("id", validated.client_id)
       .eq("is_deleted", false)
@@ -119,31 +94,24 @@ export async function POST(request: NextRequest) {
 
     const careplanData = {
       ...validated,
-      organization_id: user.organization_id,
-      created_by_id: userId,
+      organization_id: context.organizationId,
+      created_by_id: context.userId,
       primary_caregiver_id: validated.primary_caregiver_id || null,
     };
 
-    const { data, error } = await (supabase.from("care_plans") as any)
+    const { data, error } = await (context.supabase.from("care_plans") as any)
       .insert([careplanData])
       .select();
 
     if (error) throw error;
 
-    // audit_logs' real columns are event_type/resource_type/resource_id
-    // (see migration 001) - entity_type/performed_by_id don't exist on
-    // this table. Matches the convention already fixed for clients.
-    await (supabase.from("audit_logs") as any).insert([
-      {
-        organization_id: user.organization_id,
-        user_id: userId,
-        event_type: "CREATE",
-        resource_type: "care_plans",
-        resource_id: data[0]?.id,
-        action: "created",
-        changes: { new_values: careplanData },
-      },
-    ]);
+    await writeAuditLog(context, {
+      eventType: "CREATE",
+      resourceType: "care_plans",
+      resourceId: data[0]?.id,
+      action: "created",
+      changes: { new_values: careplanData },
+    });
 
     return NextResponse.json(data[0], { status: 201 });
   } catch (error) {

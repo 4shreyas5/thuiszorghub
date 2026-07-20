@@ -1,20 +1,22 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { createServerClient } from "@/core/database/server";
 import { NextRequest, NextResponse } from "next/server";
 import { completeTaskSchema } from "@/core/validation/visit-execution";
+import { requireAuth, requirePermission, writeAuditLog } from "@/core/permissions/server";
 
-export async function GET(
-  _request: NextRequest,
-  { params }: { params: Promise<{ id: string }> }
-) {
+// No permission gate beyond org membership - read-only task checklist.
+export async function GET(_request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const auth = await requireAuth();
+    if (!auth.ok) return auth.response;
+    const { context } = auth;
     const { id } = await params;
-    const supabase = await createServerClient();
+    const supabase = context.supabase;
 
-    // Get today's care plan tasks for the visit
+    // Get today's care plan tasks for the visit - scoped to the caller's own org.
     const { data: visit } = await (supabase.from("scheduled_visits") as any)
       .select("care_plan_id, scheduled_date")
       .eq("id", id)
+      .eq("organization_id", context.organizationId)
       .single();
 
     if (!visit?.care_plan_id) {
@@ -36,7 +38,9 @@ export async function GET(
       .eq("scheduled_visit_id", id)
       .eq("is_deleted", false);
 
-    const completionMap = new Map(completions?.map((c: any) => [c.care_plan_task_id, c.status]) || []);
+    const completionMap = new Map(
+      completions?.map((c: any) => [c.care_plan_task_id, c.status]) || []
+    );
 
     const tasksWithCompletion = (tasks || []).map((task: any) => ({
       ...task,
@@ -50,26 +54,25 @@ export async function GET(
   }
 }
 
-export async function POST(
-  request: NextRequest,
-  { params }: { params: Promise<{ id: string }> }
-) {
+export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const auth = await requireAuth();
+    if (!auth.ok) return auth.response;
+    const { context } = auth;
     const { id } = await params;
-    const supabase = await createServerClient();
-    const { data: { user } } = await supabase.auth.getUser();
 
-    if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
+    const permError = await requirePermission(context, "visit.complete");
+    if (permError) return permError;
 
+    const supabase = context.supabase;
     const body = await request.json();
     const validatedData = completeTaskSchema.parse(body);
 
-    // Get visit
+    // Get visit - scoped to the caller's own org.
     const { data: visit } = await (supabase.from("scheduled_visits") as any)
       .select("organization_id, care_plan_id")
       .eq("id", id)
+      .eq("organization_id", context.organizationId)
       .single();
 
     if (!visit) {
@@ -80,6 +83,7 @@ export async function POST(
     const { data: execution } = await (supabase.from("visit_executions") as any)
       .select("id")
       .eq("scheduled_visit_id", id)
+      .eq("organization_id", context.organizationId)
       .in("status", ["started", "in_progress"])
       .eq("is_deleted", false)
       .single();
@@ -108,20 +112,19 @@ export async function POST(
       .single();
 
     if (existing) {
-      return NextResponse.json(
-        { error: "Task already completed for this visit" },
-        { status: 409 }
-      );
+      return NextResponse.json({ error: "Task already completed for this visit" }, { status: 409 });
     }
 
     // Record task completion
-    const { data: completion, error: completeError } = await (supabase.from("visit_task_completions") as any)
+    const { data: completion, error: completeError } = await (
+      supabase.from("visit_task_completions") as any
+    )
       .insert({
         visit_execution_id: execution.id,
         scheduled_visit_id: id,
         care_plan_task_id: validatedData.care_plan_task_id,
         completed_at: new Date().toISOString(),
-        completed_by_id: user.id,
+        completed_by_id: context.userId,
         status: validatedData.status,
         notes: validatedData.notes || null,
         skipped_reason: validatedData.skipped_reason || null,
@@ -131,15 +134,12 @@ export async function POST(
 
     if (completeError) throw completeError;
 
-    // Log to audit logs
-    await (supabase.from("audit_logs") as any).insert({
-      organization_id: visit.organization_id,
-      user_id: user.id,
-      event_type: "CREATE",
-      resource_type: "visit_task_completions",
-      resource_id: completion.id,
+    await writeAuditLog(context, {
+      eventType: "CREATE",
+      resourceType: "visit_task_completions",
+      resourceId: completion.id,
       action: "task_completed",
-      changes: { task_id: validatedData.care_plan_task_id, status: validatedData.status }
+      changes: { task_id: validatedData.care_plan_task_id, status: validatedData.status },
     });
 
     return NextResponse.json(completion, { status: 201 });

@@ -1,7 +1,7 @@
-import { createServerClient } from "@/core/database/server";
 import { NextRequest, NextResponse } from "next/server";
 import { BillingEngine } from "@/core/billing/billing-engine";
 import { getBillingPeriod } from "@/utils/date-utils";
+import { requireAuth, requirePermission } from "@/core/permissions/server";
 
 interface CompletedVisit {
   id: unknown;
@@ -12,29 +12,15 @@ interface CompletedVisit {
 
 export async function POST(request: NextRequest) {
   try {
-    const supabase = await createServerClient();
+    const auth = await requireAuth();
+    if (!auth.ok) return auth.response;
+    const { context } = auth;
+    const supabase = context.supabase;
 
-    // Get authenticated user
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
+    const permError = await requirePermission(context, "billing.manage");
+    if (permError) return permError;
 
-    if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
-    // Get user's organization
-    const { data: userData } = await supabase
-      .from("users")
-      .select("organization_id")
-      .eq("id", user.id)
-      .single();
-
-    if (!userData) {
-      return NextResponse.json({ error: "User not found" }, { status: 404 });
-    }
-
-    const organizationId = userData.organization_id;
+    const organizationId = context.organizationId;
     const body = await request.json();
 
     // Get period (default to current month)

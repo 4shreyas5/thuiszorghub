@@ -35,22 +35,49 @@ export async function checkVisitConflicts(
 ): Promise<VisitConflict[]> {
   const conflicts: VisitConflict[] = [];
 
-  const { data: employee } = await supabase
-    .from("employees")
-    .select("id, is_active")
-    .eq("id", employeeId)
-    .single();
+  const dayOfWeek = new Date(scheduledDate).getDay();
+
+  // The 5 lookups below are independent of one another - none of their
+  // filters depend on another query's result, they only depend on this
+  // function's input params - so they're fetched concurrently instead of
+  // as 5 sequential round trips. Downstream logic (including the
+  // INACTIVE_EMPLOYEE early return) is unchanged and evaluated after all
+  // of them have resolved.
+  const [
+    { data: employee },
+    { data: existingVisits },
+    { data: unavailability },
+    { data: availability },
+    { data: client },
+  ] = await Promise.all([
+    supabase.from("employees").select("id, is_active").eq("id", employeeId).single(),
+    supabase
+      .from("scheduled_visits")
+      .select("id, title, start_time, end_time")
+      .eq("employee_id", employeeId)
+      .eq("scheduled_date", scheduledDate)
+      .eq("is_deleted", false),
+    supabase
+      .from("employee_unavailability")
+      .select("id, unavailability_type")
+      .eq("employee_id", employeeId)
+      .eq("is_deleted", false)
+      .lte("start_date", scheduledDate)
+      .gte("end_date", scheduledDate),
+    supabase
+      .from("employee_availability")
+      .select("*")
+      .eq("employee_id", employeeId)
+      .eq("day_of_week", dayOfWeek)
+      .single(),
+    clientId
+      ? supabase.from("clients").select("id, is_active").eq("id", clientId).single()
+      : Promise.resolve({ data: null }),
+  ]);
 
   if (!employee || !employee.is_active) {
     return [{ type: "INACTIVE_EMPLOYEE", message: "Employee is not active" }];
   }
-
-  const { data: existingVisits } = await supabase
-    .from("scheduled_visits")
-    .select("id, title, start_time, end_time")
-    .eq("employee_id", employeeId)
-    .eq("scheduled_date", scheduledDate)
-    .eq("is_deleted", false);
 
   (existingVisits || []).forEach((visit: any) => {
     if (excludeVisitId && visit.id === excludeVisitId) return;
@@ -69,14 +96,6 @@ export async function checkVisitConflicts(
     }
   });
 
-  const { data: unavailability } = await supabase
-    .from("employee_unavailability")
-    .select("id, unavailability_type")
-    .eq("employee_id", employeeId)
-    .eq("is_deleted", false)
-    .lte("start_date", scheduledDate)
-    .gte("end_date", scheduledDate);
-
   if (unavailability && unavailability.length > 0) {
     conflicts.push({
       type: "EMPLOYEE_UNAVAILABLE",
@@ -84,14 +103,6 @@ export async function checkVisitConflicts(
       unavailabilityId: unavailability[0].id,
     });
   }
-
-  const dayOfWeek = new Date(scheduledDate).getDay();
-  const { data: availability } = await supabase
-    .from("employee_availability")
-    .select("*")
-    .eq("employee_id", employeeId)
-    .eq("day_of_week", dayOfWeek)
-    .single();
 
   if (availability && !availability.is_available) {
     conflicts.push({
@@ -112,15 +123,8 @@ export async function checkVisitConflicts(
     }
   }
 
-  if (clientId) {
-    const { data: client } = await supabase
-      .from("clients")
-      .select("id, is_active")
-      .eq("id", clientId)
-      .single();
-    if (client && !client.is_active) {
-      conflicts.push({ type: "INACTIVE_CLIENT", message: "Client is not active" });
-    }
+  if (clientId && client && !client.is_active) {
+    conflicts.push({ type: "INACTIVE_CLIENT", message: "Client is not active" });
   }
 
   return conflicts;

@@ -1,31 +1,15 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { createServerClient } from "@/core/database/server";
 import { NextRequest, NextResponse } from "next/server";
 import { createAssignmentSchema } from "@/core/validation/assignment";
+import { requireAuth, requirePermission, writeAuditLog } from "@/core/permissions/server";
 
+// No permission gate on GET beyond org membership - see employees/route.ts.
 export async function GET(request: NextRequest) {
   try {
-    const supabase = await createServerClient();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-
-    if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
-    const { data: userData } = await supabase
-      .from("users")
-      .select("organization_id")
-      .eq("id", user.id)
-      .single();
-
-    if (!userData || !userData.organization_id) {
-      return NextResponse.json(
-        { error: "User not found or not assigned to organization" },
-        { status: 404 }
-      );
-    }
+    const auth = await requireAuth();
+    if (!auth.ok) return auth.response;
+    const { context } = auth;
+    const supabase = context.supabase;
 
     const searchParams = request.nextUrl.searchParams;
     const page = parseInt(searchParams.get("page") || "1");
@@ -49,7 +33,7 @@ export async function GET(request: NextRequest) {
     if (branchId) {
       const { data: branchClients } = await (supabase.from("clients") as any)
         .select("id")
-        .eq("organization_id", userData.organization_id)
+        .eq("organization_id", context.organizationId)
         .eq("branch_id", branchId);
       matchingClientIds = (branchClients || []).map((c: any) => c.id);
     }
@@ -60,11 +44,11 @@ export async function GET(request: NextRequest) {
       const [{ data: employeesFound }, { data: clientsFound }] = await Promise.all([
         (supabase.from("employees") as any)
           .select("id")
-          .eq("organization_id", userData.organization_id)
+          .eq("organization_id", context.organizationId)
           .or(`first_name.ilike.%${search}%,last_name.ilike.%${search}%`),
         (supabase.from("clients") as any)
           .select("id")
-          .eq("organization_id", userData.organization_id)
+          .eq("organization_id", context.organizationId)
           .or(`first_name.ilike.%${search}%,last_name.ilike.%${search}%`),
       ]);
       searchEmployeeIds = (employeesFound || []).map((e: any) => e.id);
@@ -87,7 +71,7 @@ export async function GET(request: NextRequest) {
         client:clients(id, first_name, last_name, is_active, branch:branches(id, name))`,
         { count: "exact" }
       )
-      .eq("organization_id", userData.organization_id);
+      .eq("organization_id", context.organizationId);
 
     if (status === "archived") {
       query.eq("is_deleted", true);
@@ -153,19 +137,17 @@ export async function GET(request: NextRequest) {
 
 export async function POST(request: NextRequest) {
   try {
-    const supabase = await createServerClient();
+    const auth = await requireAuth();
+    if (!auth.ok) return auth.response;
+    const { context } = auth;
+    const supabase = context.supabase;
+
+    const permError = await requirePermission(context, "assignment.create");
+    if (permError) return permError;
+
     const body = await request.json();
 
     const validatedData = createAssignmentSchema.parse(body);
-
-    const { data: userData } = await (supabase.from("users") as any)
-      .select("organization_id")
-      .eq("id", (await supabase.auth.getUser()).data.user?.id)
-      .single();
-
-    if (!userData) {
-      return NextResponse.json({ error: "User not found" }, { status: 404 });
-    }
 
     // Validate employee is active
     const { data: employee } = await (supabase.from("employees") as any)
@@ -178,7 +160,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Employee not found or inactive" }, { status: 400 });
     }
 
-    if (employee.organization_id !== userData.organization_id) {
+    if (employee.organization_id !== context.organizationId) {
       return NextResponse.json(
         { error: "Cross-organization assignment not allowed" },
         { status: 403 }
@@ -196,7 +178,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Client not found or inactive" }, { status: 400 });
     }
 
-    if (client.organization_id !== userData.organization_id) {
+    if (client.organization_id !== context.organizationId) {
       return NextResponse.json(
         { error: "Cross-organization assignment not allowed" },
         { status: 403 }
@@ -217,7 +199,7 @@ export async function POST(request: NextRequest) {
 
     const { data: existingAssignment } = await (supabase.from("employee_client_assignments") as any)
       .select("id")
-      .eq("organization_id", userData.organization_id)
+      .eq("organization_id", context.organizationId)
       .eq("employee_id", validatedData.employee_id)
       .eq("client_id", validatedData.client_id)
       .eq("is_deleted", false)
@@ -231,7 +213,7 @@ export async function POST(request: NextRequest) {
 
     const { data: assignment, error } = await (supabase.from("employee_client_assignments") as any)
       .insert({
-        organization_id: userData.organization_id,
+        organization_id: context.organizationId,
         ...validatedData,
       })
       .select()
@@ -239,13 +221,10 @@ export async function POST(request: NextRequest) {
 
     if (error) throw error;
 
-    // Log to audit logs
-    await (supabase.from("audit_logs") as any).insert({
-      organization_id: userData.organization_id,
-      user_id: (await supabase.auth.getUser()).data.user?.id,
-      event_type: "CREATE",
-      resource_type: "assignments",
-      resource_id: assignment.id,
+    await writeAuditLog(context, {
+      eventType: "CREATE",
+      resourceType: "assignments",
+      resourceId: assignment.id,
       action: "created",
       changes: { assignment: validatedData },
     });
@@ -264,7 +243,7 @@ export async function POST(request: NextRequest) {
           .single();
 
         await (supabase.from("notifications") as any).insert({
-          organization_id: userData.organization_id,
+          organization_id: context.organizationId,
           user_id: employee.id,
           notification_type: "assignment_created",
           title: "New Assignment",

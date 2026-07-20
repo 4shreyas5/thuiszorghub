@@ -1,24 +1,25 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { createServerClient } from "@/core/database/server";
 import { NextRequest, NextResponse } from "next/server";
+import { requireAuth } from "@/core/permissions/server";
 
-export async function GET(
-  _request: NextRequest,
-  { params }: { params: Promise<{ id: string }> }
-) {
+export async function GET(_request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const auth = await requireAuth();
+    if (!auth.ok) return auth.response;
+    const { context } = auth;
     const { id } = await params;
-    const supabase = await createServerClient();
+
     const searchParams = _request.nextUrl.searchParams;
     const filter = searchParams.get("filter") || "all"; // all, today, upcoming, past
 
-    let query = (supabase.from("scheduled_visits") as any)
+    let query = (context.supabase.from("scheduled_visits") as any)
       .select(
         `*,
         client:clients(id, first_name, last_name, is_active),
         branch:branches(id, name)`
       )
       .eq("employee_id", id)
+      .eq("organization_id", context.organizationId)
       .eq("is_deleted", false)
       .order("scheduled_date", { ascending: true });
 

@@ -72,11 +72,79 @@ interface CalculatedRate {
   appliedRules: string[];
 }
 
+interface BillingProfileRow {
+  default_hourly_rate: number | null;
+  weekend_rate_multiplier: number | null;
+  night_rate_multiplier: number | null;
+  holiday_rate_multiplier: number | null;
+  vat_percentage: number | null;
+}
+
+interface ClientOverrideRow {
+  hourly_rate: number;
+}
+
+interface ClientExistsRow {
+  id: string;
+}
+
+interface ClientInsuranceRow {
+  insurance_provider: string;
+}
+
+interface InsuranceRateRow {
+  hourly_rate: number;
+}
+
+interface MunicipalityContractRow {
+  hourly_rate: number;
+  weekend_rate: number | null;
+  holiday_rate: number | null;
+  night_rate: number | null;
+}
+
+interface BranchRateRow {
+  billing_hourly_rate: number | null;
+}
+
+interface EmployeeRateRow {
+  hourly_rate: number | null;
+}
+
 export class BillingEngine {
   private supabase: Awaited<ReturnType<typeof createServerClient>>;
 
+  // Per-instance lookup caches for resolveBillingRules(). A fresh
+  // BillingEngine is created per request (see route handlers below), so
+  // these are safely scoped to a single request - no reference table is
+  // written to mid-request, so a cached read is always identical to a
+  // fresh one. This turns the up-to-7-queries-per-visit chain in
+  // generateInvoiceDraft into at most one query per distinct
+  // org/client/branch/employee/date encountered across the whole batch.
+  private billingProfileCache = new Map<string, BillingProfileRow | null>();
+  private clientOverrideCache = new Map<string, ClientOverrideRow | null>();
+  private clientExistsCache = new Map<string, ClientExistsRow | null>();
+  private clientInsuranceCache = new Map<string, ClientInsuranceRow | null>();
+  private insuranceRateCache = new Map<string, InsuranceRateRow | null>();
+  private municipalityContractCache = new Map<string, MunicipalityContractRow | null>();
+  private branchRateCache = new Map<string, BranchRateRow | null>();
+  private employeeRateCache = new Map<string, EmployeeRateRow | null>();
+
   constructor(supabase: Awaited<ReturnType<typeof createServerClient>>) {
     this.supabase = supabase;
+  }
+
+  private async cachedLookup<T>(
+    cache: Map<string, T | null>,
+    key: string,
+    fetcher: () => Promise<T | null>
+  ): Promise<T | null> {
+    if (cache.has(key)) {
+      return cache.get(key) ?? null;
+    }
+    const value = await fetcher();
+    cache.set(key, value);
+    return value;
   }
 
   /**
@@ -91,12 +159,19 @@ export class BillingEngine {
   async resolveBillingRules(context: BillingContext): Promise<BillingRules> {
     const { organizationId, clientId, employeeId, branchId, visitDate } = context;
 
-    const { data: billingProfile } = await this.supabase
-      .from("billing_profiles")
-      .select("*")
-      .eq("organization_id", organizationId)
-      .eq("is_deleted", false)
-      .single();
+    const billingProfile = await this.cachedLookup(
+      this.billingProfileCache,
+      organizationId,
+      async () => {
+        const { data } = await this.supabase
+          .from("billing_profiles")
+          .select("*")
+          .eq("organization_id", organizationId)
+          .eq("is_deleted", false)
+          .single();
+        return (data as BillingProfileRow) ?? null;
+      }
+    );
 
     const baseRules: BillingRules = {
       baseHourlyRate: billingProfile?.default_hourly_rate || 25,
@@ -107,42 +182,54 @@ export class BillingEngine {
     };
 
     // Check client-specific override
-    const { data: clientOverride } = await this.supabase
-      .from("client_billing_overrides")
-      .select("hourly_rate")
-      .eq("client_id", clientId)
-      .eq("is_active", true)
-      .eq("is_deleted", false)
-      .maybeSingle();
+    const clientOverride = await this.cachedLookup(this.clientOverrideCache, clientId, async () => {
+      const { data } = await this.supabase
+        .from("client_billing_overrides")
+        .select("hourly_rate")
+        .eq("client_id", clientId)
+        .eq("is_active", true)
+        .eq("is_deleted", false)
+        .maybeSingle();
+      return data;
+    });
 
     if (clientOverride) {
       return { ...baseRules, clientOverride: clientOverride.hourly_rate };
     }
 
     // Check client insurance
-    const { data: clientData } = await this.supabase
-      .from("clients")
-      .select("id")
-      .eq("id", clientId)
-      .single();
+    const clientData = await this.cachedLookup(this.clientExistsCache, clientId, async () => {
+      const { data } = await this.supabase.from("clients").select("id").eq("id", clientId).single();
+      return data;
+    });
 
     if (clientData) {
-      const { data: insurance } = await this.supabase
-        .from("client_insurance")
-        .select("insurance_provider")
-        .eq("client_id", clientId)
-        .eq("is_deleted", false)
-        .maybeSingle();
-
-      if (insurance) {
-        const { data: insuranceRate } = await this.supabase
-          .from("insurance_contracts")
-          .select("hourly_rate")
-          .eq("insurance_provider", insurance.insurance_provider)
-          .eq("organization_id", organizationId)
-          .eq("is_active", true)
+      const insurance = await this.cachedLookup(this.clientInsuranceCache, clientId, async () => {
+        const { data } = await this.supabase
+          .from("client_insurance")
+          .select("insurance_provider")
+          .eq("client_id", clientId)
           .eq("is_deleted", false)
           .maybeSingle();
+        return data;
+      });
+
+      if (insurance) {
+        const insuranceRate = await this.cachedLookup(
+          this.insuranceRateCache,
+          `${insurance.insurance_provider}:${organizationId}`,
+          async () => {
+            const { data } = await this.supabase
+              .from("insurance_contracts")
+              .select("hourly_rate")
+              .eq("insurance_provider", insurance.insurance_provider)
+              .eq("organization_id", organizationId)
+              .eq("is_active", true)
+              .eq("is_deleted", false)
+              .maybeSingle();
+            return data;
+          }
+        );
 
         if (insuranceRate) {
           return { ...baseRules, insuranceRate: insuranceRate.hourly_rate };
@@ -152,16 +239,23 @@ export class BillingEngine {
 
     // Check municipality contract
     const dateStr = visitDate.toISOString().split("T")[0];
-    const { data: municipalityContract } = await this.supabase
-      .from("municipality_contracts")
-      .select("hourly_rate, weekend_rate, holiday_rate, night_rate")
-      .eq("branch_id", branchId)
-      .eq("organization_id", organizationId)
-      .lte("start_date", dateStr)
-      .or(`end_date.is.null,end_date.gte.${dateStr}`)
-      .eq("is_active", true)
-      .eq("is_deleted", false)
-      .maybeSingle();
+    const municipalityContract = await this.cachedLookup(
+      this.municipalityContractCache,
+      `${branchId}:${organizationId}:${dateStr}`,
+      async () => {
+        const { data } = await this.supabase
+          .from("municipality_contracts")
+          .select("hourly_rate, weekend_rate, holiday_rate, night_rate")
+          .eq("branch_id", branchId)
+          .eq("organization_id", organizationId)
+          .lte("start_date", dateStr)
+          .or(`end_date.is.null,end_date.gte.${dateStr}`)
+          .eq("is_active", true)
+          .eq("is_deleted", false)
+          .maybeSingle();
+        return data;
+      }
+    );
 
     if (municipalityContract) {
       return {
@@ -180,22 +274,28 @@ export class BillingEngine {
     }
 
     // Check branch override
-    const { data: branch } = await this.supabase
-      .from("branches")
-      .select("billing_hourly_rate")
-      .eq("id", branchId)
-      .maybeSingle();
+    const branch = await this.cachedLookup(this.branchRateCache, branchId, async () => {
+      const { data } = await this.supabase
+        .from("branches")
+        .select("billing_hourly_rate")
+        .eq("id", branchId)
+        .maybeSingle();
+      return data;
+    });
 
     if (branch?.billing_hourly_rate) {
       return { ...baseRules, branchOverride: branch.billing_hourly_rate };
     }
 
     // Check employee hourly rate
-    const { data: employee } = await this.supabase
-      .from("employees")
-      .select("hourly_rate")
-      .eq("id", employeeId)
-      .maybeSingle();
+    const employee = await this.cachedLookup(this.employeeRateCache, employeeId, async () => {
+      const { data } = await this.supabase
+        .from("employees")
+        .select("hourly_rate")
+        .eq("id", employeeId)
+        .maybeSingle();
+      return data;
+    });
 
     if (employee?.hourly_rate) {
       return { ...baseRules, employeeHourlyRate: employee.hourly_rate };
@@ -349,59 +449,66 @@ export class BillingEngine {
         .maybeSingle();
 
       let invoiceId: string;
-      const items: InvoiceItemData[] = [];
 
-      // Process each visit and calculate billing
-      for (const visit of visitsByClient) {
-        const scheduled = visit.scheduled_visits;
-        const billableMinutes = visit.billable_duration_minutes || 0;
-        const billableHours = billableMinutes / 60;
+      // Process each visit and calculate billing. Rate resolution per visit
+      // is I/O-bound (resolveBillingRules) and independent across visits -
+      // running them concurrently instead of one-at-a-time collapses the
+      // wall-clock cost to roughly the slowest single lookup instead of the
+      // sum of all of them. Promise.all preserves array order regardless of
+      // resolution order, so item ordering (and line_number below) is
+      // unaffected.
+      const items: InvoiceItemData[] = await Promise.all(
+        visitsByClient.map(async (visit) => {
+          const scheduled = visit.scheduled_visits;
+          const billableMinutes = visit.billable_duration_minutes || 0;
+          const billableHours = billableMinutes / 60;
 
-        // Resolve billing rules
-        const rules = await this.resolveBillingRules({
-          organizationId,
-          visitId: visit.id as string,
-          clientId,
-          employeeId: String(scheduled?.employee_id || ""),
-          branchId: String(scheduled?.branch_id || ""),
-          visitDate: new Date(String(scheduled?.scheduled_date || "")),
-          startTime: new Date(
-            `${String(scheduled?.scheduled_date || "")}T${String(scheduled?.start_time || "")}`
-          ),
-          endTime: new Date(
-            `${String(scheduled?.scheduled_date || "")}T${String(scheduled?.end_time || "")}`
-          ),
-          visitType: String(scheduled?.visit_type || ""),
-          carePlanId: scheduled?.care_plan_id as string | undefined,
-        });
+          // Resolve billing rules
+          const rules = await this.resolveBillingRules({
+            organizationId,
+            visitId: visit.id as string,
+            clientId,
+            employeeId: String(scheduled?.employee_id || ""),
+            branchId: String(scheduled?.branch_id || ""),
+            visitDate: new Date(String(scheduled?.scheduled_date || "")),
+            startTime: new Date(
+              `${String(scheduled?.scheduled_date || "")}T${String(scheduled?.start_time || "")}`
+            ),
+            endTime: new Date(
+              `${String(scheduled?.scheduled_date || "")}T${String(scheduled?.end_time || "")}`
+            ),
+            visitType: String(scheduled?.visit_type || ""),
+            carePlanId: scheduled?.care_plan_id as string | undefined,
+          });
 
-        // Calculate rate
-        const rateCalc = this.calculateEffectiveRate(
-          rules,
-          new Date(scheduled.scheduled_date),
-          new Date(`${scheduled.scheduled_date}T${scheduled.start_time}`),
-          new Date(`${scheduled.scheduled_date}T${scheduled.end_time}`)
-        );
+          // Calculate rate
+          const rateCalc = this.calculateEffectiveRate(
+            rules,
+            new Date(scheduled.scheduled_date),
+            new Date(`${scheduled.scheduled_date}T${scheduled.start_time}`),
+            new Date(`${scheduled.scheduled_date}T${scheduled.end_time}`)
+          );
 
-        const itemSubtotal = billableHours * rateCalc.finalRate;
-        const itemVat = itemSubtotal * (rules.vatPercentage / 100);
-        const itemTotal = itemSubtotal + itemVat;
+          const itemSubtotal = billableHours * rateCalc.finalRate;
+          const itemVat = itemSubtotal * (rules.vatPercentage / 100);
+          const itemTotal = itemSubtotal + itemVat;
 
-        items.push({
-          visitId: scheduled.id,
-          description: `${scheduled.visit_type} - ${new Date(
-            scheduled.scheduled_date
-          ).toLocaleDateString("nl-NL")}`,
-          quantity: billableHours,
-          unitPrice: rateCalc.finalRate,
-          rateType: rateCalc.rateType,
-          vatPercentage: rules.vatPercentage,
-          subtotal: itemSubtotal,
-          vat_amount: itemVat,
-          total_amount: itemTotal,
-          appliedRules: rateCalc.appliedRules,
-        });
-      }
+          return {
+            visitId: scheduled.id,
+            description: `${scheduled.visit_type} - ${new Date(
+              scheduled.scheduled_date
+            ).toLocaleDateString("nl-NL")}`,
+            quantity: billableHours,
+            unitPrice: rateCalc.finalRate,
+            rateType: rateCalc.rateType,
+            vatPercentage: rules.vatPercentage,
+            subtotal: itemSubtotal,
+            vat_amount: itemVat,
+            total_amount: itemTotal,
+            appliedRules: rateCalc.appliedRules,
+          };
+        })
+      );
 
       const subtotal = items.reduce((sum, item) => sum + item.subtotal, 0);
       const vatAmount = items.reduce((sum, item) => sum + item.vat_amount, 0);
@@ -461,41 +568,50 @@ export class BillingEngine {
         invoiceId = newInvoice.id;
       }
 
-      // Insert invoice items
-      for (let i = 0; i < items.length; i++) {
-        const item = items[i];
-        const { data: insertedItem, error: itemError } = await this.supabase
+      // Insert all invoice items in a single batched insert instead of one
+      // round trip per item, then link each item's timesheet concurrently
+      // (each update targets a distinct visit_id, so they're independent).
+      // Note: batching makes this all-or-nothing on a DB-level failure,
+      // whereas the previous per-item loop would skip a single bad row and
+      // continue - see the Sprint 2 report for why this is disclosed as an
+      // intentional tradeoff rather than silently changed.
+      if (items.length > 0) {
+        const { data: insertedItems, error: itemsError } = await this.supabase
           .from("invoice_items")
-          .insert({
-            organization_id: organizationId,
-            invoice_id: invoiceId,
-            visit_id: item.visitId,
-            description: item.description,
-            quantity: item.quantity,
-            unit_price: item.unitPrice,
-            rate_type: item.rateType,
-            vat_percentage: item.vatPercentage,
-            subtotal: item.subtotal,
-            vat_amount: item.vat_amount,
-            total_amount: item.total_amount,
-            line_number: i + 1,
-          })
-          .select()
-          .single();
+          .insert(
+            items.map((item, i) => ({
+              organization_id: organizationId,
+              invoice_id: invoiceId,
+              visit_id: item.visitId,
+              description: item.description,
+              quantity: item.quantity,
+              unit_price: item.unitPrice,
+              rate_type: item.rateType,
+              vat_percentage: item.vatPercentage,
+              subtotal: item.subtotal,
+              vat_amount: item.vat_amount,
+              total_amount: item.total_amount,
+              line_number: i + 1,
+            }))
+          )
+          .select();
 
-        if (itemError) {
-          console.error("Error inserting invoice item:", itemError);
-          continue;
+        if (itemsError) {
+          console.error("Error inserting invoice items:", itemsError);
+        } else {
+          // Link the matching timesheet to this invoice so the existing
+          // mark_timesheets_billed trigger (migration 010) can flip
+          // is_billed once the invoice status advances past draft.
+          await Promise.all(
+            (insertedItems || []).map((insertedItem) =>
+              this.supabase
+                .from("timesheets")
+                .update({ invoice_id: invoiceId, invoice_line_item_id: insertedItem.id })
+                .eq("visit_id", insertedItem.visit_id)
+                .eq("organization_id", organizationId)
+            )
+          );
         }
-
-        // Link the matching timesheet to this invoice so the existing
-        // mark_timesheets_billed trigger (migration 010) can flip is_billed
-        // once the invoice status advances past draft.
-        await this.supabase
-          .from("timesheets")
-          .update({ invoice_id: invoiceId, invoice_line_item_id: insertedItem.id })
-          .eq("visit_id", item.visitId)
-          .eq("organization_id", organizationId);
       }
 
       return invoiceId;
@@ -508,7 +624,16 @@ export class BillingEngine {
   /**
    * Create timesheet from visit execution
    */
-  async createTimesheetFromVisit(organizationId: string, visitExecutionId: string) {
+  async createTimesheetFromVisit(
+    organizationId: string,
+    visitExecutionId: string,
+    // Pass a known timesheet id (or null if known not to exist) to skip the
+    // internal existence check below - lets a caller that's already
+    // batch-fetched existing timesheets for many visits (see
+    // POST /api/billing/timesheets/from-visits) avoid re-querying per visit.
+    // Leave undefined to preserve the original always-check behavior.
+    knownExistingTimesheetId?: string | null
+  ) {
     try {
       // Get visit execution and scheduled visit details
       const { data: execution, error: execError } = await this.supabase
@@ -557,13 +682,20 @@ export class BillingEngine {
         .eq("id", scheduled.employee_id)
         .single();
 
-      // Check for existing timesheet
-      const { data: existingTimesheet } = await this.supabase
-        .from("timesheets")
-        .select("id")
-        .eq("visit_id", scheduled.id)
-        .eq("is_deleted", false)
-        .maybeSingle();
+      // Check for existing timesheet, unless the caller already knows
+      // (see knownExistingTimesheetId above).
+      let existingTimesheetId: string | null;
+      if (knownExistingTimesheetId !== undefined) {
+        existingTimesheetId = knownExistingTimesheetId;
+      } else {
+        const { data: existingTimesheet } = await this.supabase
+          .from("timesheets")
+          .select("id")
+          .eq("visit_id", scheduled.id)
+          .eq("is_deleted", false)
+          .maybeSingle();
+        existingTimesheetId = existingTimesheet?.id ?? null;
+      }
 
       const timesheetData = {
         organization_id: organizationId,
@@ -583,11 +715,11 @@ export class BillingEngine {
         is_billed: false,
       };
 
-      if (existingTimesheet) {
+      if (existingTimesheetId) {
         // Update existing
-        await this.supabase.from("timesheets").update(timesheetData).eq("id", existingTimesheet.id);
+        await this.supabase.from("timesheets").update(timesheetData).eq("id", existingTimesheetId);
 
-        return existingTimesheet.id;
+        return existingTimesheetId;
       } else {
         // Create new
         const { data: newTimesheet, error: tsError } = await this.supabase

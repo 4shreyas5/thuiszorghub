@@ -1,6 +1,6 @@
-import { createServerClient } from "@/core/database/server";
 import { NextRequest, NextResponse } from "next/server";
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
+import { requireAuth, requirePermission } from "@/core/permissions/server";
 
 interface ExportRequest {
   reportType: string;
@@ -11,28 +11,17 @@ interface ExportRequest {
 
 export async function POST(request: NextRequest) {
   try {
-    const supabase = await createServerClient();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
+    const auth = await requireAuth();
+    if (!auth.ok) return auth.response;
+    const { context } = auth;
+    const supabase = context.supabase;
 
-    if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
-    const { data: userData } = await supabase
-      .from("users")
-      .select("organization_id")
-      .eq("id", user.id)
-      .single();
-
-    if (!userData) {
-      return NextResponse.json({ error: "User not found" }, { status: 404 });
-    }
+    const permError = await requirePermission(context, "report.export");
+    if (permError) return permError;
 
     const body: ExportRequest = await request.json();
     const { reportType, format, filters, data } = body;
-    const organizationId = userData.organization_id;
+    const organizationId = context.organizationId;
 
     // PDF is handled separately from CSV/Excel below: it produces binary
     // bytes (a real PDF document via pdf-lib), not a string, so it can't
@@ -43,7 +32,7 @@ export async function POST(request: NextRequest) {
 
       await supabase.from("report_audit_logs").insert({
         organization_id: organizationId,
-        user_id: user.id,
+        user_id: context.userId,
         report_type: reportType,
         action: "exported",
         export_format: format,
@@ -90,7 +79,7 @@ export async function POST(request: NextRequest) {
     // Log export
     await supabase.from("report_audit_logs").insert({
       organization_id: organizationId,
-      user_id: user.id,
+      user_id: context.userId,
       report_type: reportType,
       action: "exported",
       export_format: format,

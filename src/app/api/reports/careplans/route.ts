@@ -1,5 +1,5 @@
-import { createServerClient } from "@/core/database/server";
 import { NextRequest, NextResponse } from "next/server";
+import { requireAuth, requirePermission } from "@/core/permissions/server";
 
 interface CarePlanMetricValue {
   clientId: string;
@@ -25,26 +25,15 @@ interface CarePlanMetricValue {
 
 export async function GET(request: NextRequest) {
   try {
-    const supabase = await createServerClient();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
+    const auth = await requireAuth();
+    if (!auth.ok) return auth.response;
+    const { context } = auth;
+    const supabase = context.supabase;
 
-    if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
+    const permError = await requirePermission(context, "report.view");
+    if (permError) return permError;
 
-    const { data: userData } = await supabase
-      .from("users")
-      .select("organization_id")
-      .eq("id", user.id)
-      .single();
-
-    if (!userData) {
-      return NextResponse.json({ error: "User not found" }, { status: 404 });
-    }
-
-    const organizationId = userData.organization_id;
+    const organizationId = context.organizationId;
 
     const searchParams = request.nextUrl.searchParams;
     const filters = {
@@ -72,26 +61,53 @@ export async function GET(request: NextRequest) {
     // 005_create_care_plans.sql:28-78).
     const carePlanIds = (carePlans || []).map((p) => p.id);
 
-    // Get goals
-    const { data: goals } = carePlanIds.length
-      ? await supabase
-          .from("care_plan_goals")
-          .select("id, care_plan_id, status, created_at")
-          .eq("is_deleted", false)
-          .in("care_plan_id", carePlanIds)
-      : { data: [] };
-
-    // Get tasks - care_plan_tasks has no status column; a task's
-    // "completion" is per-visit-occurrence, tracked in
-    // visit_task_completions (migration 009_create_visit_execution.sql:24-36),
-    // not a single status on the task definition itself.
-    const { data: tasks } = carePlanIds.length
-      ? await supabase
-          .from("care_plan_tasks")
-          .select("id, care_plan_id, created_at")
-          .eq("is_deleted", false)
-          .in("care_plan_id", carePlanIds)
-      : { data: [] };
+    // goals, tasks and reviews are all filtered only by carePlanIds and are
+    // independent of each other - run them concurrently once carePlanIds is
+    // known. (taskCompletions depends on taskIds from tasks, so it must stay
+    // sequential after this group resolves.)
+    const [{ data: goals }, { data: tasks }, { data: reviews }] = await Promise.all([
+      // Get goals
+      carePlanIds.length
+        ? supabase
+            .from("care_plan_goals")
+            .select("id, care_plan_id, status, created_at")
+            .eq("is_deleted", false)
+            .in("care_plan_id", carePlanIds)
+        : Promise.resolve({
+            data: [] as { id: string; care_plan_id: string; status: string; created_at: string }[],
+          }),
+      // Get tasks - care_plan_tasks has no status column; a task's
+      // "completion" is per-visit-occurrence, tracked in
+      // visit_task_completions (migration 009_create_visit_execution.sql:24-36),
+      // not a single status on the task definition itself.
+      carePlanIds.length
+        ? supabase
+            .from("care_plan_tasks")
+            .select("id, care_plan_id, created_at")
+            .eq("is_deleted", false)
+            .in("care_plan_id", carePlanIds)
+        : Promise.resolve({
+            data: [] as { id: string; care_plan_id: string; created_at: string }[],
+          }),
+      // Get reviews - real columns are scheduled_date/completed_date/status,
+      // not review_date/is_due/is_overdue (migration
+      // 005_create_care_plans.sql:65-78).
+      carePlanIds.length
+        ? supabase
+            .from("care_plan_reviews")
+            .select("id, care_plan_id, status, scheduled_date, completed_date")
+            .eq("is_deleted", false)
+            .in("care_plan_id", carePlanIds)
+        : Promise.resolve({
+            data: [] as {
+              id: string;
+              care_plan_id: string;
+              status: string;
+              scheduled_date: string;
+              completed_date: string | null;
+            }[],
+          }),
+    ]);
 
     const taskIds = (tasks || []).map((t) => t.id);
     const { data: taskCompletions } = taskIds.length
@@ -101,16 +117,6 @@ export async function GET(request: NextRequest) {
           .in("care_plan_task_id", taskIds)
       : { data: [] };
 
-    // Get reviews - real columns are scheduled_date/completed_date/status,
-    // not review_date/is_due/is_overdue (migration
-    // 005_create_care_plans.sql:65-78).
-    const { data: reviews } = carePlanIds.length
-      ? await supabase
-          .from("care_plan_reviews")
-          .select("id, care_plan_id, status, scheduled_date, completed_date")
-          .eq("is_deleted", false)
-          .in("care_plan_id", carePlanIds)
-      : { data: [] };
     const today = new Date().toISOString().split("T")[0];
 
     // Calculate per-plan metrics
@@ -217,7 +223,7 @@ export async function GET(request: NextRequest) {
     // Log the report
     await supabase.from("report_audit_logs").insert({
       organization_id: organizationId,
-      user_id: user.id,
+      user_id: context.userId,
       report_type: "careplans",
       action: "generated",
       filters,

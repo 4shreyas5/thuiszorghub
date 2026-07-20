@@ -1,14 +1,12 @@
-import { createServerClient } from "@/core/database/server";
 import { NextRequest, NextResponse } from "next/server";
+import { requireAuth } from "@/core/permissions/server";
 
 export async function GET(request: NextRequest) {
   try {
-    const supabase = await createServerClient();
-    const { data: { user } } = await supabase.auth.getUser();
-
-    if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
+    const auth = await requireAuth();
+    if (!auth.ok) return auth.response;
+    const { context } = auth;
+    const supabase = context.supabase;
 
     const searchParams = request.nextUrl.searchParams;
     const filters = {
@@ -22,7 +20,7 @@ export async function GET(request: NextRequest) {
     let query = supabase
       .from("notifications")
       .select("*", { count: "exact" })
-      .eq("user_id", user.id)
+      .eq("user_id", context.userId)
       .eq("is_deleted", false)
       .order("created_at", { ascending: false });
 
@@ -39,8 +37,11 @@ export async function GET(request: NextRequest) {
     }
 
     const offset = (filters.page - 1) * filters.limit;
-    const { data: notifications, count, error } = await query
-      .range(offset, offset + filters.limit - 1);
+    const {
+      data: notifications,
+      count,
+      error,
+    } = await query.range(offset, offset + filters.limit - 1);
 
     if (error) throw error;
 
@@ -48,7 +49,7 @@ export async function GET(request: NextRequest) {
     const { count: unreadCount } = await supabase
       .from("notifications")
       .select("*", { count: "exact", head: true })
-      .eq("user_id", user.id)
+      .eq("user_id", context.userId)
       .eq("is_read", false)
       .eq("is_deleted", false);
 
@@ -64,55 +65,29 @@ export async function GET(request: NextRequest) {
     });
   } catch (error) {
     console.error("Error fetching notifications:", error);
-    return NextResponse.json(
-      { error: "Internal server error" },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }
 
 export async function POST(request: NextRequest) {
   try {
-    const supabase = await createServerClient();
-    const { data: { user } } = await supabase.auth.getUser();
-
-    if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
-    const { data: userData } = await supabase
-      .from("users")
-      .select("organization_id")
-      .eq("id", user.id)
-      .single();
-
-    if (!userData) {
-      return NextResponse.json({ error: "User not found" }, { status: 404 });
-    }
+    const auth = await requireAuth();
+    if (!auth.ok) return auth.response;
+    const { context } = auth;
+    const supabase = context.supabase;
 
     const body = await request.json();
-    const {
-      notificationType,
-      title,
-      message,
-      actionUrl,
-      entityType,
-      entityId,
-      metadata,
-    } = body;
+    const { notificationType, title, message, actionUrl, entityType, entityId, metadata } = body;
 
     if (!notificationType || !title || !message) {
-      return NextResponse.json(
-        { error: "Missing required fields" },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
     }
 
     const { data: notification, error } = await supabase
       .from("notifications")
       .insert({
-        organization_id: userData.organization_id,
-        user_id: user.id,
+        organization_id: context.organizationId,
+        user_id: context.userId,
         notification_type: notificationType,
         title,
         message,
@@ -129,9 +104,6 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ data: notification }, { status: 201 });
   } catch (error) {
     console.error("Error creating notification:", error);
-    return NextResponse.json(
-      { error: "Internal server error" },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }

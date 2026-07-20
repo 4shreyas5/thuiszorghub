@@ -1,5 +1,5 @@
-import { createServerClient } from "@/core/database/server";
 import { NextRequest, NextResponse } from "next/server";
+import { requireAuth, requirePermission } from "@/core/permissions/server";
 
 interface ClientMetricValue extends Record<string, unknown> {
   clientName?: string;
@@ -25,26 +25,15 @@ interface ClientMetricValue extends Record<string, unknown> {
 
 export async function GET(request: NextRequest) {
   try {
-    const supabase = await createServerClient();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
+    const auth = await requireAuth();
+    if (!auth.ok) return auth.response;
+    const { context } = auth;
+    const supabase = context.supabase;
 
-    if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
+    const permError = await requirePermission(context, "report.view");
+    if (permError) return permError;
 
-    const { data: userData } = await supabase
-      .from("users")
-      .select("organization_id")
-      .eq("id", user.id)
-      .single();
-
-    if (!userData) {
-      return NextResponse.json({ error: "User not found" }, { status: 404 });
-    }
-
-    const organizationId = userData.organization_id;
+    const organizationId = context.organizationId;
 
     const searchParams = request.nextUrl.searchParams;
     const filters = {
@@ -78,38 +67,43 @@ export async function GET(request: NextRequest) {
     if (filters.branchId) clientQuery = clientQuery.eq("branch_id", filters.branchId);
     if (filters.riskLevel) clientQuery = clientQuery.eq("risk_level", filters.riskLevel);
 
-    const { data: clients } = await clientQuery;
-
-    // Get visits for clients - visit_executions has no client_id/executed_date
-    // column of its own; join scheduled_visits and filter client-side (same
-    // fix as the operational and employees reports).
-    const { data: rawVisits } = await supabase
-      .from("visit_executions")
-      .select("id, status, completed_at, scheduled_visits(client_id)")
-      .eq("organization_id", organizationId)
-      .gte("completed_at", `${startDate}T00:00:00Z`)
-      .lte("completed_at", `${endDate}T23:59:59Z`);
+    // clients, visits, invoices and carePlans don't depend on each other's
+    // results - run them concurrently. (goals depends on carePlanIds and
+    // must stay sequential after carePlans resolves, below.)
+    const [{ data: clients }, { data: rawVisits }, { data: invoices }, { data: carePlans }] =
+      await Promise.all([
+        clientQuery,
+        // Get visits for clients - visit_executions has no client_id/executed_date
+        // column of its own; join scheduled_visits and filter client-side (same
+        // fix as the operational and employees reports).
+        supabase
+          .from("visit_executions")
+          .select("id, status, completed_at, scheduled_visits(client_id)")
+          .eq("organization_id", organizationId)
+          .gte("completed_at", `${startDate}T00:00:00Z`)
+          .lte("completed_at", `${endDate}T23:59:59Z`),
+        // Get invoices
+        supabase
+          .from("invoices")
+          .select(
+            "id, client_id, total_amount, paid_amount, remaining_balance, status, invoice_date"
+          )
+          .eq("organization_id", organizationId)
+          .eq("is_deleted", false)
+          .gte("invoice_date", startDate)
+          .lte("invoice_date", endDate),
+        // Get care plans
+        supabase
+          .from("care_plans")
+          .select("id, client_id, status, created_at")
+          .eq("organization_id", organizationId)
+          .eq("is_deleted", false),
+      ]);
 
     const visits = (rawVisits || []).map((v) => ({
       ...v,
       client_id: (v.scheduled_visits as unknown as { client_id?: string } | null)?.client_id,
     }));
-
-    // Get invoices
-    const { data: invoices } = await supabase
-      .from("invoices")
-      .select("id, client_id, total_amount, paid_amount, remaining_balance, status, invoice_date")
-      .eq("organization_id", organizationId)
-      .eq("is_deleted", false)
-      .gte("invoice_date", startDate)
-      .lte("invoice_date", endDate);
-
-    // Get care plans
-    const { data: carePlans } = await supabase
-      .from("care_plans")
-      .select("id, client_id, status, created_at")
-      .eq("organization_id", organizationId)
-      .eq("is_deleted", false);
 
     // Get care plan goals - care_plan_goals has no organization_id column of
     // its own (only care_plans does), so scope through the already
@@ -185,7 +179,7 @@ export async function GET(request: NextRequest) {
     // Log the report
     await supabase.from("report_audit_logs").insert({
       organization_id: organizationId,
-      user_id: user.id,
+      user_id: context.userId,
       report_type: "clients",
       action: "generated",
       filters,

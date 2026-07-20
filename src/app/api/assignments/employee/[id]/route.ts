@@ -1,18 +1,25 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { createServerClient } from "@/core/database/server";
 import { NextRequest, NextResponse } from "next/server";
+import { requireAuth } from "@/core/permissions/server";
 
+// No permission gate - read-only, feeds the employee detail page's
+// assignment history panel.
 export async function GET(_request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
-    const supabase = await createServerClient();
+    const auth = await requireAuth();
+    if (!auth.ok) return auth.response;
+    const { context } = auth;
     const { id } = await params;
 
-    const { data: assignments, error } = await (supabase.from("employee_client_assignments") as any)
+    const { data: assignments, error } = await (
+      context.supabase.from("employee_client_assignments") as any
+    )
       .select(
         `*,
         client:clients(id, first_name, last_name, is_active)`
       )
       .eq("employee_id", id)
+      .eq("organization_id", context.organizationId)
       .eq("is_deleted", false)
       .order("created_at", { ascending: false });
 

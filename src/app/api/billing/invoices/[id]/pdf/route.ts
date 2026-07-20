@@ -1,29 +1,17 @@
-import { createServerClient } from "@/core/database/server";
 import { NextRequest, NextResponse } from "next/server";
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
+import { requireAuth, requirePermission } from "@/core/permissions/server";
 
 export async function GET(_request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
     const { id } = await params;
-    const supabase = await createServerClient();
+    const auth = await requireAuth();
+    if (!auth.ok) return auth.response;
+    const { context } = auth;
+    const supabase = context.supabase;
 
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-
-    if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
-    const { data: userData } = await supabase
-      .from("users")
-      .select("organization_id")
-      .eq("id", user.id)
-      .single();
-
-    if (!userData) {
-      return NextResponse.json({ error: "User not found" }, { status: 404 });
-    }
+    const permError = await requirePermission(context, "billing.view");
+    if (permError) return permError;
 
     const { data: invoice } = await supabase
       .from("invoices")
@@ -35,7 +23,7 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
         organization:organizations(name)`
       )
       .eq("id", id)
-      .eq("organization_id", userData.organization_id)
+      .eq("organization_id", context.organizationId)
       .single();
 
     if (!invoice) {

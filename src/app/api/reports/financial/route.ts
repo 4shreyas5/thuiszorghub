@@ -1,5 +1,5 @@
-import { createServerClient } from "@/core/database/server";
 import { NextRequest, NextResponse } from "next/server";
+import { requireAuth, requirePermission } from "@/core/permissions/server";
 
 interface FinancialFilters {
   startDate?: string | undefined;
@@ -10,26 +10,15 @@ interface FinancialFilters {
 
 export async function GET(request: NextRequest) {
   try {
-    const supabase = await createServerClient();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
+    const auth = await requireAuth();
+    if (!auth.ok) return auth.response;
+    const { context } = auth;
+    const supabase = context.supabase;
 
-    if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
+    const permError = await requirePermission(context, "report.view");
+    if (permError) return permError;
 
-    const { data: userData } = await supabase
-      .from("users")
-      .select("organization_id")
-      .eq("id", user.id)
-      .single();
-
-    if (!userData) {
-      return NextResponse.json({ error: "User not found" }, { status: 404 });
-    }
-
-    const organizationId = userData.organization_id;
+    const organizationId = context.organizationId;
 
     // Parse filters
     const searchParams = request.nextUrl.searchParams;
@@ -71,7 +60,21 @@ export async function GET(request: NextRequest) {
     if (filters.branchId) invoiceQuery = invoiceQuery.eq("branch_id", filters.branchId);
     if (filters.clientId) invoiceQuery = invoiceQuery.eq("client_id", filters.clientId);
 
-    const { data: invoices, error: invoiceError } = await invoiceQuery;
+    // invoices and payments are independent queries (payments has its own
+    // date filter and doesn't depend on the invoices result) - run them
+    // concurrently instead of waiting on invoices first.
+    const [{ data: invoices, error: invoiceError }, { data: payments }] = await Promise.all([
+      invoiceQuery,
+      // Get payments - the real table is "payments" (see
+      // src/app/api/billing/payments/route.ts), not "invoice_payments".
+      supabase
+        .from("payments")
+        .select("amount, payment_date, payment_method")
+        .eq("organization_id", organizationId)
+        .eq("is_deleted", false)
+        .gte("payment_date", startDate)
+        .lte("payment_date", endDate),
+    ]);
 
     if (invoiceError) throw invoiceError;
 
@@ -106,16 +109,6 @@ export async function GET(request: NextRequest) {
       else if (daysDifference <= 60) invoiceAging["60_90"] += inv.remaining_balance;
       else invoiceAging["90_plus"] += inv.remaining_balance;
     });
-
-    // Get payments - the real table is "payments" (see
-    // src/app/api/billing/payments/route.ts), not "invoice_payments".
-    const { data: payments } = await supabase
-      .from("payments")
-      .select("amount, payment_date, payment_method")
-      .eq("organization_id", organizationId)
-      .eq("is_deleted", false)
-      .gte("payment_date", startDate)
-      .lte("payment_date", endDate);
 
     const paymentsByMethod: Record<string, number> = {};
     payments?.forEach((p) => {
@@ -157,7 +150,7 @@ export async function GET(request: NextRequest) {
     // Log the report
     await supabase.from("report_audit_logs").insert({
       organization_id: organizationId,
-      user_id: user.id,
+      user_id: context.userId,
       report_type: "financial",
       action: "generated",
       filters,

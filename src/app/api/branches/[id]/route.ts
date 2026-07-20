@@ -1,38 +1,19 @@
-import { createServerClient } from "@/core/database/server";
 import { NextRequest, NextResponse } from "next/server";
+import { requireAuth, requirePermission } from "@/core/permissions/server";
 
-async function requireOrgContext(supabase: Awaited<ReturnType<typeof createServerClient>>) {
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user)
-    return { error: NextResponse.json({ error: "Unauthorized" }, { status: 401 }) } as const;
-
-  const { data: userData, error } = await supabase
-    .from("users")
-    .select("organization_id")
-    .eq("id", user.id)
-    .single();
-
-  if (error || !userData) {
-    return { error: NextResponse.json({ error: "User not found" }, { status: 404 }) } as const;
-  }
-
-  return { user, organizationId: userData.organization_id } as const;
-}
-
+// GET has no permission gate beyond org membership - see branches/route.ts.
 export async function GET(_request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
-    const supabase = await createServerClient();
+    const auth = await requireAuth();
+    if (!auth.ok) return auth.response;
+    const { context } = auth;
     const { id } = await params;
-    const ctx = await requireOrgContext(supabase);
-    if ("error" in ctx) return ctx.error;
 
-    const { data: branch, error } = await supabase
+    const { data: branch, error } = await context.supabase
       .from("branches")
       .select("*, manager:manager_user_id(id, first_name, last_name, email)")
       .eq("id", id)
-      .eq("organization_id", ctx.organizationId)
+      .eq("organization_id", context.organizationId)
       .eq("is_deleted", false)
       .single();
 
@@ -49,10 +30,13 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
 
 export async function PUT(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
-    const supabase = await createServerClient();
+    const auth = await requireAuth();
+    if (!auth.ok) return auth.response;
+    const { context } = auth;
     const { id } = await params;
-    const ctx = await requireOrgContext(supabase);
-    if ("error" in ctx) return ctx.error;
+
+    const permError = await requirePermission(context, "branch.update");
+    if (permError) return permError;
 
     const body = await request.json();
     const {
@@ -69,7 +53,7 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
       isActive,
     } = body;
 
-    const { data: branch, error } = await supabase
+    const { data: branch, error } = await context.supabase
       .from("branches")
       .update({
         name: name || undefined,
@@ -86,7 +70,7 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
         updated_at: new Date().toISOString(),
       })
       .eq("id", id)
-      .eq("organization_id", ctx.organizationId)
+      .eq("organization_id", context.organizationId)
       .select()
       .single();
 
@@ -110,19 +94,22 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const supabase = await createServerClient();
+    const auth = await requireAuth();
+    if (!auth.ok) return auth.response;
+    const { context } = auth;
     const { id } = await params;
-    const ctx = await requireOrgContext(supabase);
-    if ("error" in ctx) return ctx.error;
 
-    const { data: branch, error } = await supabase
+    const permError = await requirePermission(context, "branch.delete");
+    if (permError) return permError;
+
+    const { data: branch, error } = await context.supabase
       .from("branches")
       .update({
         is_active: false,
         updated_at: new Date().toISOString(),
       })
       .eq("id", id)
-      .eq("organization_id", ctx.organizationId)
+      .eq("organization_id", context.organizationId)
       .select()
       .single();
 

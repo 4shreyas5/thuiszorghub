@@ -1,36 +1,22 @@
 import { createServerClient, createServerAdminClient } from "@/core/database/server";
 import { NextRequest, NextResponse } from "next/server";
+import { requireAuth, requirePermission } from "@/core/permissions/server";
 
+// Deliberately no permission gate beyond org membership: this feeds the
+// app shell (org name/branding in AdminSidebar, shown to every role), so
+// it must stay readable by any authenticated member of the org, not just
+// organization.view holders (Owner/Auditor) - gating it would break the
+// sidebar for every other role.
 export async function GET() {
   try {
-    const supabase = await createServerClient();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
+    const auth = await requireAuth();
+    if (!auth.ok) return auth.response;
+    const { context } = auth;
 
-    if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
-    const { data: userData, error: userError } = await supabase
-      .from("users")
-      .select("organization_id")
-      .eq("id", user.id)
-      .single();
-
-    if (userError || !userData) {
-      console.error("[org GET] Error fetching user:", userError);
-      return NextResponse.json({ error: "User not found" }, { status: 404 });
-    }
-
-    if (!userData.organization_id) {
-      return NextResponse.json({ error: "User not assigned to organization" }, { status: 400 });
-    }
-
-    const { data: organization, error } = await supabase
+    const { data: organization, error } = await context.supabase
       .from("organizations")
       .select("*")
-      .eq("id", userData.organization_id)
+      .eq("id", context.organizationId)
       .single();
 
     if (error) throw error;
@@ -52,6 +38,21 @@ export async function POST(request: NextRequest) {
 
     if (!user) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    // Bootstrap only - a user who already belongs to an organization must
+    // not be able to silently re-provision themselves into a brand new one
+    // (this upserts on users.id further down, which would otherwise orphan
+    // their existing organization membership without any warning).
+    const { data: existingProfile } = await supabase
+      .from("users")
+      .select("organization_id")
+      .eq("id", user.id)
+      .eq("is_deleted", false)
+      .maybeSingle();
+
+    if (existingProfile?.organization_id) {
+      return NextResponse.json({ error: "You already belong to an organization" }, { status: 409 });
     }
 
     const body = await request.json();
@@ -198,6 +199,8 @@ export async function POST(request: NextRequest) {
           "schedule.view",
           "schedule.create",
           "visit.view",
+          "visit.create",
+          "visit.update",
           "visit.manage",
           "document.view",
           "report.view",
@@ -216,6 +219,7 @@ export async function POST(request: NextRequest) {
           "employee.view",
           "client.view",
           "visit.view",
+          "visit.create",
           "visit.update",
           "visit.complete",
           "dashboard.view",
@@ -342,24 +346,13 @@ export async function POST(request: NextRequest) {
 
 export async function PUT(request: NextRequest) {
   try {
-    const supabase = await createServerClient();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
+    const auth = await requireAuth();
+    if (!auth.ok) return auth.response;
+    const { context } = auth;
+    const supabase = context.supabase;
 
-    if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
-    const { data: userData } = await supabase
-      .from("users")
-      .select("organization_id")
-      .eq("id", user.id)
-      .single();
-
-    if (!userData) {
-      return NextResponse.json({ error: "User not found" }, { status: 404 });
-    }
+    const permError = await requirePermission(context, "organization.update");
+    if (permError) return permError;
 
     const body = await request.json();
     const {
@@ -379,10 +372,6 @@ export async function PUT(request: NextRequest) {
       timezone,
       currency,
     } = body;
-
-    console.log("[org PUT] auth user id:", user.id);
-    console.log("[org PUT] organization_id from users table:", userData.organization_id);
-    console.log("[org PUT] organization_id in WHERE clause:", userData.organization_id);
 
     const { data: organizations, error } = await supabase
       .from("organizations")
@@ -404,19 +393,13 @@ export async function PUT(request: NextRequest) {
         currency: currency || undefined,
         updated_at: new Date().toISOString(),
       })
-      .eq("id", userData.organization_id)
+      .eq("id", context.organizationId)
       .select();
-
-    console.log("[org PUT] rows affected/returned:", organizations?.length ?? 0);
-    console.log("[org PUT] returned data:", organizations);
 
     if (error) throw error;
 
     if (!organizations || organizations.length === 0) {
-      console.error(
-        "[org PUT] UPDATE matched 0 rows for organization_id:",
-        userData.organization_id
-      );
+      console.error("[org PUT] UPDATE matched 0 rows for organization_id:", context.organizationId);
       return NextResponse.json(
         { error: "Organization not found or you do not have permission to update it" },
         { status: 404 }

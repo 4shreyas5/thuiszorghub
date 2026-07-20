@@ -328,7 +328,7 @@ export default function EmployeesPage() {
                     <TableCell>
                       <StatusBadge
                         status={employee.status}
-                        label={employee.status.replace("_", " ")}
+                        label={employee.status?.replace("_", " ")}
                         className="capitalize"
                       />
                     </TableCell>

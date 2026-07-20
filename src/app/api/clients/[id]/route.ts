@@ -1,18 +1,21 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { createServerClient } from "@/core/database/server";
 import { NextRequest, NextResponse } from "next/server";
 import { updateClientSchema } from "@/core/validation/client";
+import { requireAuth, requirePermission, writeAuditLog } from "@/core/permissions/server";
 
+// No permission gate beyond org membership - see clients/route.ts.
 export async function GET(_request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
-    const supabase = await createServerClient();
+    const auth = await requireAuth();
+    if (!auth.ok) return auth.response;
+    const { context } = auth;
     const { id } = await params;
 
     // No is_deleted filter here on purpose: archived clients must stay
     // viewable on their own detail page (they remain in history and stay
     // linked to their past visits/assignments/care plans) - only list
     // views default to hiding archived clients.
-    const { data: client, error } = await (supabase.from("clients") as any)
+    const { data: client, error } = await (context.supabase.from("clients") as any)
       .select(
         `*,
         branch:branches(id, name),
@@ -24,6 +27,7 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
       `
       )
       .eq("id", id)
+      .eq("organization_id", context.organizationId)
       .single();
 
     if (error || !client) {
@@ -39,8 +43,14 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
 
 export async function PUT(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
-    const supabase = await createServerClient();
+    const auth = await requireAuth();
+    if (!auth.ok) return auth.response;
+    const { context } = auth;
     const { id } = await params;
+
+    const permError = await requirePermission(context, "client.update");
+    if (permError) return permError;
+
     const body = await request.json();
     const parsed = updateClientSchema.safeParse(body);
 
@@ -56,18 +66,7 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
     }
 
     const data = parsed.data;
-
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-    const { data: userData } = await (supabase.from("users") as any)
-      .select("organization_id")
-      .eq("id", user?.id)
-      .single();
-
-    if (!userData) {
-      return NextResponse.json({ error: "User not found" }, { status: 404 });
-    }
+    const supabase = context.supabase;
 
     const updateData: Record<string, unknown> = {
       first_name: data.first_name,
@@ -102,9 +101,18 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
     const { data: client, error: updateError } = await (supabase.from("clients") as any)
       .update(updateData)
       .eq("id", id)
+      .eq("organization_id", context.organizationId)
       .select()
       .single();
 
+    // PGRST116 ("no rows returned by .single()") and 22P02 (invalid UUID
+    // syntax passed to .eq("id", id)) both mean "no such client" from the
+    // caller's point of view - a real 404, not a server error. Any other
+    // error (a genuine constraint/column/DB problem) still falls through
+    // to the catch block below as a real 500.
+    if (updateError?.code === "PGRST116" || updateError?.code === "22P02" || !client) {
+      return NextResponse.json({ error: "Client not found" }, { status: 404 });
+    }
     if (updateError) throw updateError;
 
     // Update address if provided
@@ -162,13 +170,10 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
       }
     }
 
-    // Log to audit logs
-    await (supabase.from("audit_logs") as any).insert({
-      organization_id: userData.organization_id,
-      user_id: user?.id,
-      event_type: "UPDATE",
-      resource_type: "clients",
-      resource_id: id,
+    await writeAuditLog(context, {
+      eventType: "UPDATE",
+      resourceType: "clients",
+      resourceId: id,
       action: "updated",
       changes: { updates: updateData },
     });
@@ -185,23 +190,16 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const supabase = await createServerClient();
+    const auth = await requireAuth();
+    if (!auth.ok) return auth.response;
+    const { context } = auth;
     const { id } = await params;
 
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-    const { data: userData } = await (supabase.from("users") as any)
-      .select("organization_id")
-      .eq("id", user?.id)
-      .single();
-
-    if (!userData) {
-      return NextResponse.json({ error: "User not found" }, { status: 404 });
-    }
+    const permError = await requirePermission(context, "client.delete");
+    if (permError) return permError;
 
     // Soft delete client
-    const { data: client, error } = await (supabase.from("clients") as any)
+    const { data: client, error } = await (context.supabase.from("clients") as any)
       .update({
         is_deleted: true,
         deleted_at: new Date().toISOString(),
@@ -209,18 +207,19 @@ export async function DELETE(
         status: "archived",
       })
       .eq("id", id)
+      .eq("organization_id", context.organizationId)
       .select()
       .single();
 
+    if (error?.code === "PGRST116" || error?.code === "22P02" || !client) {
+      return NextResponse.json({ error: "Client not found" }, { status: 404 });
+    }
     if (error) throw error;
 
-    // Log to audit logs
-    await (supabase.from("audit_logs") as any).insert({
-      organization_id: userData.organization_id,
-      user_id: user?.id,
-      event_type: "DELETE",
-      resource_type: "clients",
-      resource_id: id,
+    await writeAuditLog(context, {
+      eventType: "DELETE",
+      resourceType: "clients",
+      resourceId: id,
       action: "archived",
       changes: { deleted_at: new Date().toISOString() },
     });

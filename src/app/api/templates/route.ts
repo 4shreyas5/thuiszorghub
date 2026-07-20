@@ -1,24 +1,15 @@
-import { createServerClient } from "@/core/database/server";
 import { NextRequest, NextResponse } from "next/server";
+import { requireAuth, requirePermission } from "@/core/permissions/server";
 
 export async function GET(request: NextRequest) {
   try {
-    const supabase = await createServerClient();
-    const { data: { user } } = await supabase.auth.getUser();
+    const auth = await requireAuth();
+    if (!auth.ok) return auth.response;
+    const { context } = auth;
+    const supabase = context.supabase;
 
-    if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
-    const { data: userData } = await supabase
-      .from("users")
-      .select("organization_id")
-      .eq("id", user.id)
-      .single();
-
-    if (!userData) {
-      return NextResponse.json({ error: "User not found" }, { status: 404 });
-    }
+    const permError = await requirePermission(context, "settings.view");
+    if (permError) return permError;
 
     const searchParams = request.nextUrl.searchParams;
     const templateKey = searchParams.get("templateKey");
@@ -26,7 +17,7 @@ export async function GET(request: NextRequest) {
     let query = supabase
       .from("email_templates")
       .select("*")
-      .eq("organization_id", userData.organization_id)
+      .eq("organization_id", context.organizationId)
       .eq("is_deleted", false)
       .eq("is_active", true);
 
@@ -41,31 +32,19 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ data: templates || [] });
   } catch (error) {
     console.error("Error fetching templates:", error);
-    return NextResponse.json(
-      { error: "Internal server error" },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }
 
 export async function POST(request: NextRequest) {
   try {
-    const supabase = await createServerClient();
-    const { data: { user } } = await supabase.auth.getUser();
+    const auth = await requireAuth();
+    if (!auth.ok) return auth.response;
+    const { context } = auth;
+    const supabase = context.supabase;
 
-    if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
-    const { data: userData } = await supabase
-      .from("users")
-      .select("organization_id")
-      .eq("id", user.id)
-      .single();
-
-    if (!userData) {
-      return NextResponse.json({ error: "User not found" }, { status: 404 });
-    }
+    const permError = await requirePermission(context, "settings.manage");
+    if (permError) return permError;
 
     const body = await request.json();
     const {
@@ -78,23 +57,20 @@ export async function POST(request: NextRequest) {
     } = body;
 
     if (!templateKey || !templateName || !subjectTemplate || !bodyHtmlTemplate) {
-      return NextResponse.json(
-        { error: "Missing required fields" },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
     }
 
     const { data: template, error } = await supabase
       .from("email_templates")
       .insert({
-        organization_id: userData.organization_id,
+        organization_id: context.organizationId,
         template_key: templateKey,
         template_name: templateName,
         subject_template: subjectTemplate,
         body_html_template: bodyHtmlTemplate,
         body_text_template: bodyTextTemplate,
         variables: variables || [],
-        created_by: user.id,
+        created_by: context.userId,
       })
       .select()
       .single();
@@ -104,9 +80,6 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ data: template }, { status: 201 });
   } catch (error) {
     console.error("Error creating template:", error);
-    return NextResponse.json(
-      { error: "Internal server error" },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }

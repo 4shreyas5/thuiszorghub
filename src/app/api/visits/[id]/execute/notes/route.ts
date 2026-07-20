@@ -1,17 +1,29 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { createServerClient } from "@/core/database/server";
 import { NextRequest, NextResponse } from "next/server";
 import { saveVisitNoteSchema } from "@/core/validation/visit-execution";
+import { requireAuth, requirePermission, writeAuditLog } from "@/core/permissions/server";
 
-export async function GET(
-  _request: NextRequest,
-  { params }: { params: Promise<{ id: string }> }
-) {
+// No permission gate beyond org membership - read-only clinical notes list.
+export async function GET(_request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const auth = await requireAuth();
+    if (!auth.ok) return auth.response;
+    const { context } = auth;
     const { id } = await params;
-    const supabase = await createServerClient();
 
-    const { data: notes } = await (supabase.from("visit_notes") as any)
+    // Verify the visit belongs to the caller's own org before returning
+    // anything tied to it.
+    const { data: visit } = await (context.supabase.from("scheduled_visits") as any)
+      .select("id")
+      .eq("id", id)
+      .eq("organization_id", context.organizationId)
+      .single();
+
+    if (!visit) {
+      return NextResponse.json({ error: "Visit not found" }, { status: 404 });
+    }
+
+    const { data: notes } = await (context.supabase.from("visit_notes") as any)
       .select("*")
       .eq("scheduled_visit_id", id)
       .order("created_at", { ascending: false });
@@ -23,26 +35,25 @@ export async function GET(
   }
 }
 
-export async function POST(
-  request: NextRequest,
-  { params }: { params: Promise<{ id: string }> }
-) {
+export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const auth = await requireAuth();
+    if (!auth.ok) return auth.response;
+    const { context } = auth;
     const { id } = await params;
-    const supabase = await createServerClient();
-    const { data: { user } } = await supabase.auth.getUser();
 
-    if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
+    const permError = await requirePermission(context, "visit.complete");
+    if (permError) return permError;
 
+    const supabase = context.supabase;
     const body = await request.json();
     const validatedData = saveVisitNoteSchema.parse(body);
 
-    // Get visit
+    // Get visit - scoped to the caller's own org.
     const { data: visit } = await (supabase.from("scheduled_visits") as any)
       .select("organization_id")
       .eq("id", id)
+      .eq("organization_id", context.organizationId)
       .single();
 
     if (!visit) {
@@ -53,6 +64,7 @@ export async function POST(
     const { data: execution } = await (supabase.from("visit_executions") as any)
       .select("id")
       .eq("scheduled_visit_id", id)
+      .eq("organization_id", context.organizationId)
       .in("status", ["started", "in_progress"])
       .eq("is_deleted", false)
       .single();
@@ -72,22 +84,19 @@ export async function POST(
         pain_score: validatedData.pain_score || null,
         vital_signs: validatedData.vital_signs || null,
         recommendations: validatedData.recommendations || null,
-        created_by_id: user.id,
+        created_by_id: context.userId,
       })
       .select()
       .single();
 
     if (noteError) throw noteError;
 
-    // Log to audit logs
-    await (supabase.from("audit_logs") as any).insert({
-      organization_id: visit.organization_id,
-      user_id: user.id,
-      event_type: "CREATE",
-      resource_type: "visit_notes",
-      resource_id: note.id,
+    await writeAuditLog(context, {
+      eventType: "CREATE",
+      resourceType: "visit_notes",
+      resourceId: note.id,
       action: "note_saved",
-      changes: { category: validatedData.category }
+      changes: { category: validatedData.category },
     });
 
     return NextResponse.json(note, { status: 201 });

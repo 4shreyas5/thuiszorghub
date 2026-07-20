@@ -1,49 +1,45 @@
-'use client';
+"use client";
 
-import { useState } from 'react';
-import { useRouter } from 'next/navigation';
-import Link from 'next/link';
-import { useAuthActions } from '@/hooks/useAuthActions';
+import { useState } from "react";
+import Link from "next/link";
+import { useAuthActions } from "@/hooks/useAuthActions";
 
 export default function RegisterPage() {
-  const router = useRouter();
   const { signUp, isLoading, error } = useAuthActions();
   const [formData, setFormData] = useState({
-    email: '',
-    password: '',
-    confirmPassword: '',
-    firstName: '',
-    lastName: '',
-    timezone: 'Europe/Amsterdam',
-    language: 'en',
+    email: "",
+    password: "",
+    confirmPassword: "",
+    firstName: "",
+    lastName: "",
+    timezone: "Europe/Amsterdam",
+    language: "en",
   });
   const [localError, setLocalError] = useState<string | null>(null);
 
-  const handleChange = (
-    e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>
-  ) => {
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
     const { name, value } = e.target;
     setFormData((prev) => ({ ...prev, [name]: value }));
   };
 
   const validateForm = () => {
     if (!formData.email || !formData.password || !formData.firstName || !formData.lastName) {
-      setLocalError('All fields are required');
+      setLocalError("All fields are required");
       return false;
     }
 
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(formData.email)) {
-      setLocalError('Please enter a valid email address');
+      setLocalError("Please enter a valid email address");
       return false;
     }
 
     if (formData.password.length < 8) {
-      setLocalError('Password must be at least 8 characters');
+      setLocalError("Password must be at least 8 characters");
       return false;
     }
 
     if (formData.password !== formData.confirmPassword) {
-      setLocalError('Passwords do not match');
+      setLocalError("Passwords do not match");
       return false;
     }
 
@@ -63,11 +59,19 @@ export default function RegisterPage() {
         firstName: formData.firstName,
         lastName: formData.lastName,
         timezone: formData.timezone,
-        language: formData.language as 'en' | 'nl',
+        language: formData.language as "en" | "nl",
       });
-      router.push('/onboarding');
+      // Full navigation, not router.push: OnboardingGuard reads
+      // isAuthenticated from AuthProvider, which only initializes once on
+      // mount - a client-side push into /onboarding reuses that same
+      // pre-signup mount, so isAuthenticated is still stuck false and the
+      // guard renders nothing. Every real signup landed on a blank
+      // onboarding page because of this (same root cause as the login
+      // page's redirect - see its handleSubmit for the full explanation).
+      window.location.href = "/onboarding";
     } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : 'Registration failed. Please try again.';
+      const errorMsg =
+        err instanceof Error ? err.message : "Registration failed. Please try again.";
       setLocalError(errorMsg);
     }
   };
@@ -213,12 +217,12 @@ export default function RegisterPage() {
           disabled={isLoading}
           className="w-full bg-blue-600 text-white py-2 rounded-lg font-medium hover:bg-blue-700 transition disabled:opacity-50 disabled:cursor-not-allowed"
         >
-          {isLoading ? 'Creating account...' : 'Create Account'}
+          {isLoading ? "Creating account..." : "Create Account"}
         </button>
       </form>
 
       <div className="text-center text-sm text-gray-600">
-        Already have an account?{' '}
+        Already have an account?{" "}
         <Link href="/auth/login" className="text-blue-600 hover:text-blue-700 font-medium">
           Sign in
         </Link>

@@ -84,7 +84,7 @@ const STATUS_VARIANT_MAP: Record<string, NonNullable<BadgeProps["variant"]>> = {
 };
 
 export function statusVariant(status: string): NonNullable<BadgeProps["variant"]> {
-  return STATUS_VARIANT_MAP[status.toLowerCase()] ?? "default";
+  return STATUS_VARIANT_MAP[status?.toLowerCase()] ?? "default";
 }
 
 // Every status gets its own icon in addition to its color - a status is
@@ -118,7 +118,7 @@ const STATUS_ICON_MAP: Record<string, LucideIcon> = {
 };
 
 function statusIcon(status: string): LucideIcon {
-  return STATUS_ICON_MAP[status.toLowerCase()] ?? Circle;
+  return STATUS_ICON_MAP[status?.toLowerCase()] ?? Circle;
 }
 
 interface StatusBadgeProps {
@@ -143,7 +143,7 @@ export function StatusBadge({ status, label, size, className }: StatusBadgeProps
         strokeWidth: ICON_STROKE_WIDTH,
         "aria-hidden": true,
       })}
-      {label ?? status}
+      {label ?? status ?? "Unknown"}
     </Badge>
   );
 }

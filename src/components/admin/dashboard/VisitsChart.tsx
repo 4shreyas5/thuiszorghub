@@ -18,8 +18,7 @@ interface ChartPoint {
   visits: number;
 }
 
-const PAGE_SIZE = 100;
-const MAX_PAGES = 40; // hard cap (4,000 visits/month) to prevent runaway paging
+const MAX_VISITS = 4000; // hard cap on a single month's fetch
 
 /**
  * Read-only month-to-date visit analytics. Sources rows directly from the
@@ -27,6 +26,12 @@ const MAX_PAGES = 40; // hard cap (4,000 visits/month) to prevent runaway paging
  * dashboard never triggers the report_audit_logs write that
  * /api/reports/operational performs. No historical/trend comparison is shown -
  * only the current month's real, counted data.
+ *
+ * Fetches in a single request instead of paging: `fields=minimal` (see
+ * GET /api/visits) drops the client/employee/branch/care_plan joins server
+ * side since only `scheduled_date`/`status` are read here, and `limit`
+ * covers a full month in one round trip instead of the previous up-to-40
+ * sequential page requests.
  */
 export function VisitsChart() {
   const [rows, setRows] = useState<VisitRow[] | null>(null);
@@ -39,19 +44,12 @@ export function VisitsChart() {
     const dateTo = format(today, "yyyy-MM-dd");
 
     async function loadAll() {
-      const collected: VisitRow[] = [];
       try {
-        for (let page = 1; page <= MAX_PAGES; page++) {
-          const res = await fetch(
-            `/api/visits?dateFrom=${dateFrom}&dateTo=${dateTo}&sortBy=scheduled_date&sortOrder=asc&limit=${PAGE_SIZE}&page=${page}`
-          );
-          if (!res.ok) break;
-          const json = await res.json();
-          const batch: VisitRow[] = json?.visits ?? [];
-          collected.push(...batch);
-          if (batch.length < PAGE_SIZE) break;
-        }
-        if (!cancelled) setRows(collected);
+        const res = await fetch(
+          `/api/visits?dateFrom=${dateFrom}&dateTo=${dateTo}&sortBy=scheduled_date&sortOrder=asc&limit=${MAX_VISITS}&page=1&fields=minimal`
+        );
+        const batch: VisitRow[] = res.ok ? ((await res.json())?.visits ?? []) : [];
+        if (!cancelled) setRows(batch);
       } catch {
         if (!cancelled) setRows([]);
       } finally {

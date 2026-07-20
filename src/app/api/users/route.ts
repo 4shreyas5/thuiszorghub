@@ -1,5 +1,6 @@
-import { createServerClient, createServerAdminClient } from "@/core/database/server";
+import { createServerAdminClient } from "@/core/database/server";
 import { NextRequest, NextResponse } from "next/server";
+import { requireAuth, requirePermission, writeAuditLog } from "@/core/permissions/server";
 
 // "pending" vs "accepted" isn't tracked in public.users - it's derived from
 // Supabase Auth's own record of whether the invited account has confirmed
@@ -27,32 +28,18 @@ async function getInvitationStatuses(
 
 export async function GET(request: NextRequest) {
   try {
-    const supabase = await createServerClient();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
+    const auth = await requireAuth();
+    if (!auth.ok) return auth.response;
+    const { context } = auth;
+    const supabase = context.supabase;
 
-    if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
-    const { data: userData, error: userError } = await supabase
-      .from("users")
-      .select("organization_id")
-      .eq("id", user.id)
-      .single();
-
-    if (userError || !userData) {
-      console.error("[users GET] Error fetching current user:", userError);
-      return NextResponse.json({ error: "User not found" }, { status: 404 });
-    }
+    const permError = await requirePermission(context, "user.view");
+    if (permError) return permError;
 
     const searchParams = request.nextUrl.searchParams;
     const page = parseInt(searchParams.get("page") || "1");
     const limit = parseInt(searchParams.get("limit") || "50");
     const offset = (page - 1) * limit;
-
-    console.log("[users GET] auth user id:", user.id, "organization_id:", userData.organization_id);
 
     // NOTE: branches and user_roles are deliberately NOT embedded here.
     // Both would be ambiguous PostgREST embeds (PGRST201) because there is
@@ -83,7 +70,7 @@ export async function GET(request: NextRequest) {
         `,
         { count: "exact" }
       )
-      .eq("organization_id", userData.organization_id)
+      .eq("organization_id", context.organizationId)
       .eq("is_deleted", false)
       .range(offset, offset + limit - 1)
       .order("created_at", { ascending: false });
@@ -160,25 +147,12 @@ export async function GET(request: NextRequest) {
 // NOT NULL and only the inviter (an existing org member) can supply it.
 export async function POST(request: NextRequest) {
   try {
-    const supabase = await createServerClient();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
+    const auth = await requireAuth();
+    if (!auth.ok) return auth.response;
+    const { context } = auth;
 
-    if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
-    const { data: userData, error: userError } = await supabase
-      .from("users")
-      .select("organization_id")
-      .eq("id", user.id)
-      .single();
-
-    if (userError || !userData) {
-      console.error("[users POST] Error fetching current user:", userError);
-      return NextResponse.json({ error: "User not found" }, { status: 404 });
-    }
+    const permError = await requirePermission(context, "user.invite");
+    if (permError) return permError;
 
     const body = await request.json();
     const { email, firstName, lastName, branchId, roleId } = body;
@@ -187,9 +161,18 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Email is required" }, { status: 400 });
     }
 
+    // Assigning a role at invite time is the same sensitive action as
+    // reassigning roles via PUT /api/users/[id] - gated the same way, so
+    // "user.invite" alone can never be used to invite someone straight
+    // into a privileged role.
+    if (roleId) {
+      const roleError = await requirePermission(context, "user.manage");
+      if (roleError) return roleError;
+    }
+
     const adminClient = await createServerAdminClient();
 
-    console.log("[users POST] Inviting user:", email, "into org:", userData.organization_id);
+    console.log("[users POST] Inviting user:", email, "into org:", context.organizationId);
 
     let authUserId: string;
     let isExistingAccount = false;
@@ -256,7 +239,7 @@ export async function POST(request: NextRequest) {
       if (
         existingProfile &&
         !existingProfile.is_deleted &&
-        existingProfile.organization_id !== userData.organization_id
+        existingProfile.organization_id !== context.organizationId
       ) {
         return NextResponse.json(
           { error: "This email already belongs to a user in another organization" },
@@ -273,7 +256,7 @@ export async function POST(request: NextRequest) {
       .from("users")
       .upsert({
         id: authUserId,
-        organization_id: userData.organization_id,
+        organization_id: context.organizationId,
         branch_id: branchId || null,
         first_name: firstName || "",
         last_name: lastName || "",
@@ -298,7 +281,7 @@ export async function POST(request: NextRequest) {
       const { error: roleAssignError } = await adminClient
         .from("user_roles")
         .upsert(
-          { user_id: newUser.id, role_id: roleId, assigned_by: user.id },
+          { user_id: newUser.id, role_id: roleId, assigned_by: context.userId },
           { onConflict: "user_id,role_id" }
         );
 
@@ -312,6 +295,15 @@ export async function POST(request: NextRequest) {
       isExistingAccount ? "Existing account attached:" : "User invited successfully:",
       newUser.id
     );
+
+    await writeAuditLog(context, {
+      eventType: "CREATE",
+      resourceType: "users",
+      resourceId: newUser.id,
+      action: "invited",
+      changes: { new_values: { email, firstName, lastName, branchId, roleId } },
+    });
+
     return NextResponse.json({ data: newUser, isExistingAccount }, { status: 201 });
   } catch (error) {
     console.error("Error inviting user:", error);

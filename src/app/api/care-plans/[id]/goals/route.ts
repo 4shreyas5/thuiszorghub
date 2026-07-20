@@ -1,20 +1,30 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { createServerClient } from "@/core/database/server";
 import { NextRequest, NextResponse } from "next/server";
 import { createGoalSchema } from "@/core/validation/care-plan";
 import { z } from "zod";
+import { requireAuth, requirePermission } from "@/core/permissions/server";
 
 export const dynamic = "force-dynamic";
 
-export async function GET(
-  _request: NextRequest,
-  { params }: { params: Promise<{ id: string }> }
-) {
+// No permission gate beyond org membership - see care-plans/route.ts.
+export async function GET(_request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const auth = await requireAuth();
+    if (!auth.ok) return auth.response;
+    const { context } = auth;
     const { id } = await params;
-    const supabase = await createServerClient();
 
-    const { data, error } = await (supabase.from("care_plan_goals") as any)
+    const { data: carePlan } = await (context.supabase.from("care_plans") as any)
+      .select("id")
+      .eq("id", id)
+      .eq("organization_id", context.organizationId)
+      .single();
+
+    if (!carePlan) {
+      return NextResponse.json({ error: "Care plan not found" }, { status: 404 });
+    }
+
+    const { data, error } = await (context.supabase.from("care_plan_goals") as any)
       .select("*")
       .eq("care_plan_id", id)
       .eq("is_deleted", false)
@@ -28,20 +38,24 @@ export async function GET(
   }
 }
 
-export async function POST(
-  request: NextRequest,
-  { params }: { params: Promise<{ id: string }> }
-) {
+export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const auth = await requireAuth();
+    if (!auth.ok) return auth.response;
+    const { context } = auth;
+
+    const permError = await requirePermission(context, "care_plan.create");
+    if (permError) return permError;
+
     const { id } = await params;
-    const supabase = await createServerClient();
     const body = await request.json();
 
     const validated = createGoalSchema.parse({ ...body, care_plan_id: id });
 
-    const { data: carePlan } = await (supabase.from("care_plans") as any)
+    const { data: carePlan } = await (context.supabase.from("care_plans") as any)
       .select("id, is_deleted")
       .eq("id", id)
+      .eq("organization_id", context.organizationId)
       .eq("is_deleted", false)
       .single();
 
@@ -49,7 +63,7 @@ export async function POST(
       return NextResponse.json({ error: "Care plan not found" }, { status: 404 });
     }
 
-    const { data, error } = await (supabase.from("care_plan_goals") as any)
+    const { data, error } = await (context.supabase.from("care_plan_goals") as any)
       .insert([{ ...validated, status: "active" }])
       .select();
 

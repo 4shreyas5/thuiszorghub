@@ -1,34 +1,19 @@
-import { createServerClient } from "@/core/database/server";
 import { NextRequest, NextResponse } from "next/server";
+import { requireAuth } from "@/core/permissions/server";
 
-export async function GET(
-  _request: NextRequest,
-  { params }: { params: Promise<{ id: string }> }
-) {
+export async function GET(_request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   try {
-    const supabase = await createServerClient();
-    const { data: { user } } = await supabase.auth.getUser();
-
-    if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
-    const { data: userData } = await supabase
-      .from("users")
-      .select("organization_id")
-      .eq("id", user.id)
-      .single();
-
-    if (!userData) {
-      return NextResponse.json({ error: "User not found" }, { status: 404 });
-    }
+    const auth = await requireAuth();
+    if (!auth.ok) return auth.response;
+    const { context } = auth;
+    const supabase = context.supabase;
 
     const { data: document, error } = await supabase
       .from("documents")
       .select("*")
       .eq("id", id)
-      .eq("organization_id", userData.organization_id)
+      .eq("organization_id", context.organizationId)
       .eq("is_deleted", false)
       .single();
 
@@ -46,30 +31,22 @@ export async function GET(
     }
 
     // Log download action
-    await supabase
-      .from("document_audit_logs")
-      .insert({
-        organization_id: userData.organization_id,
-        document_id: id,
-        user_id: user.id,
-        action: "download",
-      });
+    await supabase.from("document_audit_logs").insert({
+      organization_id: context.organizationId,
+      document_id: id,
+      user_id: context.userId,
+      action: "download",
+    });
 
     // Return file
     const headers = new Headers();
     headers.set("Content-Type", document.mime_type);
-    headers.set(
-      "Content-Disposition",
-      `attachment; filename="${document.file_name}"`
-    );
+    headers.set("Content-Disposition", `attachment; filename="${document.file_name}"`);
     headers.set("Cache-Control", "no-cache");
 
     return new NextResponse(fileData, { headers });
   } catch (error) {
     console.error("Error downloading document:", error);
-    return NextResponse.json(
-      { error: "Internal server error" },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }

@@ -1,31 +1,32 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { createServerClient } from "@/core/database/server";
 import { NextRequest, NextResponse } from "next/server";
 import { completeVisitSchema } from "@/core/validation/visit-execution";
+import { requireAuth, requirePermission, writeAuditLog } from "@/core/permissions/server";
 
-export async function POST(
-  request: NextRequest,
-  { params }: { params: Promise<{ id: string }> }
-) {
+export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const auth = await requireAuth();
+    if (!auth.ok) return auth.response;
+    const { context } = auth;
     const { id } = await params;
-    const supabase = await createServerClient();
-    const { data: { user } } = await supabase.auth.getUser();
 
-    if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
+    const permError = await requirePermission(context, "visit.complete");
+    if (permError) return permError;
 
+    const supabase = context.supabase;
     const body = await request.json();
     const validatedData = completeVisitSchema.parse(body);
 
-    // Get visit with all related data
+    // Get visit with all related data - scoped to the caller's own org.
     const { data: visit } = await (supabase.from("scheduled_visits") as any)
-      .select(`*,
+      .select(
+        `*,
         client:clients(id, first_name, last_name),
         employee:employees(id, first_name, last_name),
-        care_plan:care_plans(id)`)
+        care_plan:care_plans(id)`
+      )
       .eq("id", id)
+      .eq("organization_id", context.organizationId)
       .eq("is_deleted", false)
       .single();
 
@@ -37,6 +38,7 @@ export async function POST(
     const { data: execution } = await (supabase.from("visit_executions") as any)
       .select("id, status")
       .eq("scheduled_visit_id", id)
+      .eq("organization_id", context.organizationId)
       .eq("is_deleted", false)
       .single();
 
@@ -57,17 +59,21 @@ export async function POST(
     // Calculate actual duration
     const startTime = new Date(`2000-01-01T${visit.start_time}`);
     const endTime = new Date(`2000-01-01T${validatedData.actual_end_time}`);
-    const actualDurationMinutes = Math.round((endTime.getTime() - startTime.getTime()) / (1000 * 60));
+    const actualDurationMinutes = Math.round(
+      (endTime.getTime() - startTime.getTime()) / (1000 * 60)
+    );
 
     // Complete visit execution
-    const { data: completedExecution, error: execError } = await (supabase.from("visit_executions") as any)
+    const { data: completedExecution, error: execError } = await (
+      supabase.from("visit_executions") as any
+    )
       .update({
         status: "completed",
         actual_end_time: validatedData.actual_end_time,
         actual_duration_minutes: actualDurationMinutes,
         billable_duration_minutes: actualDurationMinutes,
         completed_at: new Date().toISOString(),
-        completed_by_id: user.id,
+        completed_by_id: context.userId,
         updated_at: new Date().toISOString(),
       })
       .eq("id", execution.id)
@@ -80,57 +86,54 @@ export async function POST(
     await (supabase.from("scheduled_visits") as any)
       .update({
         status: "completed",
-        updated_at: new Date().toISOString()
+        updated_at: new Date().toISOString(),
       })
-      .eq("id", id);
+      .eq("id", id)
+      .eq("organization_id", context.organizationId);
 
     // Create/update timesheet for billing
     if (visit.employee_id) {
       const billableHours = actualDurationMinutes / 60;
 
-      await (supabase.from("timesheets") as any)
-        .insert({
-          organization_id: visit.organization_id,
-          visit_id: id,
-          employee_id: visit.employee_id,
-          client_id: visit.client_id,
-          visit_date: visit.scheduled_date,
-          start_time: visit.start_time,
-          end_time: validatedData.actual_end_time,
-          total_hours: billableHours,
-          billable_hours: billableHours,
-          created_by: user.id,
-        });
+      await (supabase.from("timesheets") as any).insert({
+        organization_id: context.organizationId,
+        visit_id: id,
+        employee_id: visit.employee_id,
+        client_id: visit.client_id,
+        visit_date: visit.scheduled_date,
+        start_time: visit.start_time,
+        end_time: validatedData.actual_end_time,
+        total_hours: billableHours,
+        billable_hours: billableHours,
+        created_by: context.userId,
+      });
     }
 
     // Visit completion logged to care plan history via audit logs
 
-    // Log to audit logs
-    await (supabase.from("audit_logs") as any).insert({
-      organization_id: visit.organization_id,
-      user_id: user.id,
-      event_type: "UPDATE",
-      resource_type: "scheduled_visits",
-      resource_id: id,
+    await writeAuditLog(context, {
+      eventType: "UPDATE",
+      resourceType: "scheduled_visits",
+      resourceId: id,
       action: "visit_completed",
       changes: {
         status: "completed",
         actual_duration_minutes: actualDurationMinutes,
         billable_duration_minutes: actualDurationMinutes,
-      }
+      },
     });
 
     // Log to visit history
     await (supabase.from("visit_history") as any).insert({
-      organization_id: visit.organization_id,
+      organization_id: context.organizationId,
       scheduled_visit_id: id,
       action: "completed",
-      action_by_id: user.id,
+      action_by_id: context.userId,
       notes: validatedData.notes,
       new_values: {
         status: "completed",
         actual_duration_minutes: actualDurationMinutes,
-      }
+      },
     });
 
     return NextResponse.json({
@@ -147,18 +150,20 @@ export async function POST(
   }
 }
 
-export async function GET(
-  _request: NextRequest,
-  { params }: { params: Promise<{ id: string }> }
-) {
+// No permission gate beyond org membership - read-only completion status.
+export async function GET(_request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const auth = await requireAuth();
+    if (!auth.ok) return auth.response;
+    const { context } = auth;
     const { id } = await params;
-    const supabase = await createServerClient();
+    const supabase = context.supabase;
 
-    // Get visit execution details
+    // Get visit execution details - scoped to the caller's own org.
     const { data: execution } = await (supabase.from("visit_executions") as any)
       .select("*")
       .eq("scheduled_visit_id", id)
+      .eq("organization_id", context.organizationId)
       .eq("is_deleted", false)
       .order("created_at", { ascending: false })
       .limit(1)
@@ -168,25 +173,24 @@ export async function GET(
       return NextResponse.json({ status: "no_execution" });
     }
 
-    // Get task completions
-    const { data: tasks } = await (supabase.from("visit_task_completions") as any)
-      .select("*")
-      .eq("visit_execution_id", execution.id);
-
-    // Get medications
-    const { data: medications } = await (supabase.from("visit_medication_records") as any)
-      .select("*")
-      .eq("visit_execution_id", execution.id);
-
-    // Get notes
-    const { data: notes } = await (supabase.from("visit_notes") as any)
-      .select("*")
-      .eq("visit_execution_id", execution.id);
+    // Task completions, medications, and notes are all independent lookups
+    // scoped only by execution.id, so fetch them concurrently instead of
+    // as 3 sequential round trips.
+    const [{ data: tasks }, { data: medications }, { data: notes }] = await Promise.all([
+      (supabase.from("visit_task_completions") as any)
+        .select("*")
+        .eq("visit_execution_id", execution.id),
+      (supabase.from("visit_medication_records") as any)
+        .select("*")
+        .eq("visit_execution_id", execution.id),
+      (supabase.from("visit_notes") as any).select("*").eq("visit_execution_id", execution.id),
+    ]);
 
     // Determine if visit can be completed
     const hasNotes = (notes?.length || 0) > 0;
     const hasCompletedTasks = (tasks?.filter((t: any) => t.status === "completed").length || 0) > 0;
-    const allMedicationsRecorded = (medications?.length || 0) > 0 || (medications?.length || 0) === 0;
+    const allMedicationsRecorded =
+      (medications?.length || 0) > 0 || (medications?.length || 0) === 0;
 
     return NextResponse.json({
       execution,
@@ -198,7 +202,7 @@ export async function GET(
         has_completed_tasks: hasCompletedTasks,
         medications_recorded: allMedicationsRecorded,
         can_complete: hasNotes,
-      }
+      },
     });
   } catch (error) {
     console.error("Error fetching visit completion status:", error);

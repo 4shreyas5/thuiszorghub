@@ -1,27 +1,15 @@
-import { createServerClient } from "@/core/database/server";
 import { NextRequest, NextResponse } from "next/server";
+import { requireAuth, requirePermission } from "@/core/permissions/server";
 
 export async function GET(request: NextRequest) {
   try {
-    const supabase = await createServerClient();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
+    const auth = await requireAuth();
+    if (!auth.ok) return auth.response;
+    const { context } = auth;
+    const supabase = context.supabase;
 
-    if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
-    const { data: userData, error: userError } = await supabase
-      .from("users")
-      .select("organization_id")
-      .eq("id", user.id)
-      .single();
-
-    if (userError || !userData) {
-      console.error("[roles GET] Error fetching user:", userError);
-      return NextResponse.json({ error: "User not found" }, { status: 404 });
-    }
+    const permError = await requirePermission(context, "role.view");
+    if (permError) return permError;
 
     const searchParams = request.nextUrl.searchParams;
     const page = parseInt(searchParams.get("page") || "1");
@@ -46,7 +34,7 @@ export async function GET(request: NextRequest) {
         `,
         { count: "exact" }
       )
-      .eq("organization_id", userData.organization_id)
+      .eq("organization_id", context.organizationId)
       .range(offset, offset + limit - 1)
       .order("created_at", { ascending: false });
 
@@ -69,25 +57,13 @@ export async function GET(request: NextRequest) {
 
 export async function POST(request: NextRequest) {
   try {
-    const supabase = await createServerClient();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
+    const auth = await requireAuth();
+    if (!auth.ok) return auth.response;
+    const { context } = auth;
+    const supabase = context.supabase;
 
-    if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
-    const { data: userData, error: userError } = await supabase
-      .from("users")
-      .select("organization_id")
-      .eq("id", user.id)
-      .single();
-
-    if (userError || !userData) {
-      console.error("[roles POST] Error fetching user:", userError);
-      return NextResponse.json({ error: "User not found" }, { status: 404 });
-    }
+    const permCheck = await requirePermission(context, "role.create");
+    if (permCheck) return permCheck;
 
     const body = await request.json();
     const { name, description, permissionIds } = body;
@@ -99,7 +75,7 @@ export async function POST(request: NextRequest) {
     const { data: role, error } = await supabase
       .from("roles")
       .insert({
-        organization_id: userData.organization_id,
+        organization_id: context.organizationId,
         name,
         description,
         is_system: false,
@@ -110,14 +86,12 @@ export async function POST(request: NextRequest) {
     if (error) throw error;
 
     if (Array.isArray(permissionIds) && permissionIds.length > 0) {
-      const { error: permError } = await supabase
-        .from("role_permissions")
-        .insert(
-          permissionIds.map((permissionId: string) => ({
-            role_id: role.id,
-            permission_id: permissionId,
-          }))
-        );
+      const { error: permError } = await supabase.from("role_permissions").insert(
+        permissionIds.map((permissionId: string) => ({
+          role_id: role.id,
+          permission_id: permissionId,
+        }))
+      );
       if (permError) console.error("[roles POST] Error assigning permissions:", permError);
     }
 

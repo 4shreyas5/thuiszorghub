@@ -225,7 +225,7 @@ export default function InvoicesPage() {
                   <TableCell>
                     <StatusBadge
                       status={invoice.status}
-                      label={invoice.status.replace(/_/g, " ")}
+                      label={invoice.status?.replace(/_/g, " ")}
                       size="sm"
                     />
                   </TableCell>

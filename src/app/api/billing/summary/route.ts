@@ -1,29 +1,23 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { createServerClient } from "@/core/database/server";
 import { NextRequest, NextResponse } from "next/server";
+import { requireAuth, requirePermission } from "@/core/permissions/server";
 
 export async function GET(request: NextRequest) {
   try {
-    const supabase = await createServerClient();
+    const auth = await requireAuth();
+    if (!auth.ok) return auth.response;
+    const { context } = auth;
+    const supabase = context.supabase;
+
+    const permError = await requirePermission(context, "billing.view");
+    if (permError) return permError;
+
     const searchParams = request.nextUrl.searchParams;
     const date = searchParams.get("date") || new Date().toISOString().split("T")[0];
     const period = searchParams.get("period") || "month"; // day, month, year
     const clientId = searchParams.get("clientId") || undefined;
 
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-    if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
-    // Get user's organization
-    const { data: userData } = await (supabase.from("users") as any)
-      .select("organization_id")
-      .eq("id", user.id)
-      .single();
-
-    const orgId = userData?.organization_id;
+    const orgId = context.organizationId;
     const currentDate = new Date(date);
     let startDate: Date;
     const endDate = currentDate;
@@ -75,22 +69,16 @@ export async function GET(request: NextRequest) {
     const endDateStr = new Date(endDate).toISOString().split("T")[0];
     const todayStr = new Date().toISOString().split("T")[0];
 
-    // Get today's billable hours
+    // Today's billable hours, month's billable hours, and period invoices
+    // are three independent queries - none depends on another's result -
+    // so they run concurrently instead of one-after-another.
     let todayTimesheetsQuery = (supabase.from("timesheets") as any)
       .select("billable_hours")
       .eq("organization_id", orgId)
       .eq("visit_date", todayStr)
       .eq("is_deleted", false);
     if (clientId) todayTimesheetsQuery = todayTimesheetsQuery.eq("client_id", clientId);
-    const { data: todayTimesheets } = await todayTimesheetsQuery;
 
-    const billableHoursToday =
-      todayTimesheets?.reduce(
-        (sum: number, ts: any) => sum + (parseFloat(ts.billable_hours) || 0),
-        0
-      ) || 0;
-
-    // Get month's billable hours
     let monthTimesheetsQuery = (supabase.from("timesheets") as any)
       .select("billable_hours")
       .eq("organization_id", orgId)
@@ -98,15 +86,7 @@ export async function GET(request: NextRequest) {
       .lte("visit_date", endDateStr)
       .eq("is_deleted", false);
     if (clientId) monthTimesheetsQuery = monthTimesheetsQuery.eq("client_id", clientId);
-    const { data: monthTimesheets } = await monthTimesheetsQuery;
 
-    const billableHoursMonth =
-      monthTimesheets?.reduce(
-        (sum: number, ts: any) => sum + (parseFloat(ts.billable_hours) || 0),
-        0
-      ) || 0;
-
-    // Get invoices for the period
     let invoicesQuery = (supabase.from("invoices") as any)
       .select("total_amount, status, due_date, paid_amount, invoice_date")
       .eq("organization_id", orgId)
@@ -114,7 +94,21 @@ export async function GET(request: NextRequest) {
       .lte("invoice_date", endDateStr)
       .eq("is_deleted", false);
     if (clientId) invoicesQuery = invoicesQuery.eq("client_id", clientId);
-    const { data: invoices } = await invoicesQuery;
+
+    const [{ data: todayTimesheets }, { data: monthTimesheets }, { data: invoices }] =
+      await Promise.all([todayTimesheetsQuery, monthTimesheetsQuery, invoicesQuery]);
+
+    const billableHoursToday =
+      todayTimesheets?.reduce(
+        (sum: number, ts: any) => sum + (parseFloat(ts.billable_hours) || 0),
+        0
+      ) || 0;
+
+    const billableHoursMonth =
+      monthTimesheets?.reduce(
+        (sum: number, ts: any) => sum + (parseFloat(ts.billable_hours) || 0),
+        0
+      ) || 0;
 
     let revenueToday = 0;
     let revenueMonth = 0;

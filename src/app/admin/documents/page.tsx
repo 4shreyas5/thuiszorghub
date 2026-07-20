@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { useAuth } from "@/core/context/auth-context";
 import { PageHeader } from "@/components/admin/PageHeader";
+import { Pagination } from "@/components/ui/Pagination";
 import { Upload, Download, Trash2, FileText, CheckCircle2, AlertCircle } from "lucide-react";
 import { format } from "date-fns";
 
@@ -24,6 +25,9 @@ export default function DocumentsPage() {
   const [documents, setDocuments] = useState<Document[]>([]);
   const [loading, setLoading] = useState(true);
   const [entityType, setEntityType] = useState<string>("");
+  const [page, setPage] = useState(1);
+  const [pageCount, setPageCount] = useState(1);
+  const PAGE_SIZE = 50;
   const [uploadFile, setUploadFile] = useState<File | null>(null);
   const [uploadEntityType, setUploadEntityType] = useState<string>("");
   const [uploadEntityId, setUploadEntityId] = useState<string>("");
@@ -63,18 +67,20 @@ export default function DocumentsPage() {
       setLoading(true);
       const params = new URLSearchParams();
       if (entityType) params.append("entityType", entityType);
-      params.append("limit", "50");
+      params.append("page", String(page));
+      params.append("limit", String(PAGE_SIZE));
 
       const response = await fetch(`/api/documents?${params}`);
       const data = await response.json();
 
       setDocuments(data.data || []);
+      setPageCount(data.pagination?.pages || 1);
     } catch (error) {
       console.error("Error fetching documents:", error);
     } finally {
       setLoading(false);
     }
-  }, [entityType]);
+  }, [entityType, page]);
 
   useEffect(() => {
     // Deferred to a microtask so the fetch trigger isn't a synchronous setState call in the effect body.
@@ -270,7 +276,10 @@ export default function DocumentsPage() {
       <div className="flex gap-4">
         <select
           value={entityType}
-          onChange={(e) => setEntityType(e.target.value)}
+          onChange={(e) => {
+            setEntityType(e.target.value);
+            setPage(1);
+          }}
           className="px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
         >
           <option value="">All Entity Types</option>
@@ -367,6 +376,10 @@ export default function DocumentsPage() {
           </div>
         )}
       </div>
+
+      {!loading && documents.length > 0 && pageCount > 1 && (
+        <Pagination page={page} pageCount={pageCount} onPageChange={setPage} />
+      )}
     </div>
   );
 }

@@ -159,13 +159,15 @@ export default function VisitDetailPage() {
       setVisit(visitData);
 
       if (["in_progress", "started"].includes(visitData.status)) {
-        const tasksRes = await fetch(`/api/visits/${visitId}/execute/tasks`);
+        // None of these three depend on one another's response - only on
+        // visitId - so they run concurrently instead of one after another.
+        const [tasksRes, medRes, notesRes] = await Promise.all([
+          fetch(`/api/visits/${visitId}/execute/tasks`),
+          fetch(`/api/visits/${visitId}/execute/medications`),
+          fetch(`/api/visits/${visitId}/execute/notes`),
+        ]);
         if (tasksRes.ok) setTasks((await tasksRes.json()).tasks);
-
-        const medRes = await fetch(`/api/visits/${visitId}/execute/medications`);
         if (medRes.ok) setMedications((await medRes.json()).medications);
-
-        const notesRes = await fetch(`/api/visits/${visitId}/execute/notes`);
         if (notesRes.ok) setNotes((await notesRes.json()).notes);
       }
     } catch (err) {

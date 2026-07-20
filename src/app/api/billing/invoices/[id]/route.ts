@@ -1,29 +1,17 @@
-import { createServerClient } from "@/core/database/server";
 import { NextRequest, NextResponse } from "next/server";
 import { UpdateInvoiceStatusSchema } from "@/core/validation/billing-schemas";
+import { requireAuth, requirePermission, writeAuditLog } from "@/core/permissions/server";
 
 export async function GET(_request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
     const { id } = await params;
-    const supabase = await createServerClient();
+    const auth = await requireAuth();
+    if (!auth.ok) return auth.response;
+    const { context } = auth;
+    const supabase = context.supabase;
 
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-
-    if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
-    const { data: userData } = await supabase
-      .from("users")
-      .select("organization_id")
-      .eq("id", user.id)
-      .single();
-
-    if (!userData) {
-      return NextResponse.json({ error: "User not found" }, { status: 404 });
-    }
+    const permError = await requirePermission(context, "billing.view");
+    if (permError) return permError;
 
     const { data: invoice } = await supabase
       .from("invoices")
@@ -38,7 +26,7 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
       `
       )
       .eq("id", id)
-      .eq("organization_id", userData.organization_id)
+      .eq("organization_id", context.organizationId)
       .single();
 
     if (!invoice) {
@@ -55,25 +43,13 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
 export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
     const { id } = await params;
-    const supabase = await createServerClient();
+    const auth = await requireAuth();
+    if (!auth.ok) return auth.response;
+    const { context } = auth;
+    const supabase = context.supabase;
 
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-
-    if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
-    const { data: userData } = await supabase
-      .from("users")
-      .select("organization_id")
-      .eq("id", user.id)
-      .single();
-
-    if (!userData) {
-      return NextResponse.json({ error: "User not found" }, { status: 404 });
-    }
+    const permError = await requirePermission(context, "billing.manage");
+    if (permError) return permError;
 
     const body = await request.json();
     const validatedData = UpdateInvoiceStatusSchema.parse(body);
@@ -83,7 +59,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       .from("invoices")
       .select("*")
       .eq("id", id)
-      .eq("organization_id", userData.organization_id)
+      .eq("organization_id", context.organizationId)
       .eq("is_deleted", false)
       .single();
 
@@ -96,36 +72,33 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       .from("invoices")
       .update({
         status: validatedData.status,
-        updated_by: user.id,
+        updated_by: context.userId,
         updated_at: new Date(),
         sent_at: validatedData.status === "sent" ? new Date() : currentInvoice.sent_at,
         paid_at: validatedData.status === "paid" ? new Date() : currentInvoice.paid_at,
       })
       .eq("id", id)
-      .eq("organization_id", userData.organization_id)
+      .eq("organization_id", context.organizationId)
       .select()
       .single();
 
     // Log status change
     if (validatedData.status !== currentInvoice.status) {
       await supabase.from("invoice_status_history").insert({
-        organization_id: userData.organization_id,
+        organization_id: context.organizationId,
         invoice_id: id,
         old_status: currentInvoice.status,
         new_status: validatedData.status,
         changed_reason: validatedData.changedReason,
         notes: validatedData.notes,
-        created_by: user.id,
+        created_by: context.userId,
       });
     }
 
-    // Audit log
-    await supabase.from("audit_logs").insert({
-      organization_id: userData.organization_id,
-      user_id: user.id,
-      event_type: "UPDATE",
-      resource_type: "invoices",
-      resource_id: id,
+    await writeAuditLog(context, {
+      eventType: "UPDATE",
+      resourceType: "invoices",
+      resourceId: id,
       action: "updated",
       changes: {
         status: {
@@ -148,25 +121,13 @@ export async function DELETE(
 ) {
   try {
     const { id } = await params;
-    const supabase = await createServerClient();
+    const auth = await requireAuth();
+    if (!auth.ok) return auth.response;
+    const { context } = auth;
+    const supabase = context.supabase;
 
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-
-    if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
-    const { data: userData } = await supabase
-      .from("users")
-      .select("organization_id")
-      .eq("id", user.id)
-      .single();
-
-    if (!userData) {
-      return NextResponse.json({ error: "User not found" }, { status: 404 });
-    }
+    const permError = await requirePermission(context, "billing.manage");
+    if (permError) return permError;
 
     // Soft delete
     const { data } = await supabase
@@ -174,10 +135,10 @@ export async function DELETE(
       .update({
         is_deleted: true,
         deleted_at: new Date(),
-        updated_by: user.id,
+        updated_by: context.userId,
       })
       .eq("id", id)
-      .eq("organization_id", userData.organization_id)
+      .eq("organization_id", context.organizationId)
       .select()
       .single();
 
@@ -185,13 +146,10 @@ export async function DELETE(
       return NextResponse.json({ error: "Invoice not found" }, { status: 404 });
     }
 
-    // Audit log
-    await supabase.from("audit_logs").insert({
-      organization_id: userData.organization_id,
-      user_id: user.id,
-      event_type: "DELETE",
-      resource_type: "invoices",
-      resource_id: id,
+    await writeAuditLog(context, {
+      eventType: "DELETE",
+      resourceType: "invoices",
+      resourceId: id,
       action: "deleted",
       changes: { old_values: data },
     });

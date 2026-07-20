@@ -1,20 +1,18 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { createServerClient } from "@/core/database/server";
 import { NextRequest, NextResponse } from "next/server";
+import { requireAuth, requirePermission, writeAuditLog } from "@/core/permissions/server";
 
-export async function POST(
-  request: NextRequest,
-  { params }: { params: Promise<{ id: string }> }
-) {
+export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const auth = await requireAuth();
+    if (!auth.ok) return auth.response;
+    const { context } = auth;
     const { id } = await params;
-    const supabase = await createServerClient();
-    const { data: { user } } = await supabase.auth.getUser();
 
-    if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
+    const permError = await requirePermission(context, "visit.complete");
+    if (permError) return permError;
 
+    const supabase = context.supabase;
     const body = await request.json();
     const { status, notes } = body;
 
@@ -25,10 +23,11 @@ export async function POST(
       );
     }
 
-    // Get existing visit
+    // Get existing visit - scoped to the caller's own org.
     const { data: existingVisit } = await (supabase.from("scheduled_visits") as any)
       .select("*")
       .eq("id", id)
+      .eq("organization_id", context.organizationId)
       .eq("is_deleted", false)
       .single();
 
@@ -39,7 +38,7 @@ export async function POST(
     // Update visit status
     const updateData: any = {
       status,
-      updated_at: new Date().toISOString()
+      updated_at: new Date().toISOString(),
     };
 
     if (notes) {
@@ -49,29 +48,27 @@ export async function POST(
     const { data: visit, error } = await (supabase.from("scheduled_visits") as any)
       .update(updateData)
       .eq("id", id)
+      .eq("organization_id", context.organizationId)
       .select()
       .single();
 
     if (error) throw error;
 
-    // Log to audit logs
-    await (supabase.from("audit_logs") as any).insert({
-      organization_id: existingVisit.organization_id,
-      user_id: user.id,
-      event_type: "UPDATE",
-      resource_type: "scheduled_visits",
-      resource_id: id,
+    await writeAuditLog(context, {
+      eventType: "UPDATE",
+      resourceType: "scheduled_visits",
+      resourceId: id,
       action: `marked_as_${status}`,
-      changes: { previous_status: existingVisit.status, new_status: status }
+      changes: { previous_status: existingVisit.status, new_status: status },
     });
 
     // Log to visit history
     await (supabase.from("visit_history") as any).insert({
-      organization_id: existingVisit.organization_id,
+      organization_id: context.organizationId,
       scheduled_visit_id: id,
       action: `marked_as_${status}`,
-      action_by_id: user.id,
-      new_values: { status, notes }
+      action_by_id: context.userId,
+      new_values: { status, notes },
     });
 
     // Auto-generate notification on visit completion
@@ -92,7 +89,7 @@ export async function POST(
 
           if (clientUser?.id) {
             await (supabase.from("notifications") as any).insert({
-              organization_id: existingVisit.organization_id,
+              organization_id: context.organizationId,
               user_id: clientUser.id,
               notification_type: "visit_completed",
               title: "Visit Completed",
@@ -100,7 +97,7 @@ export async function POST(
               action_url: `/admin/visits/${id}`,
               entity_type: "scheduled_visits",
               entity_id: id,
-              metadata: { status, notes }
+              metadata: { status, notes },
             });
           }
         }

@@ -1,34 +1,22 @@
-import { createServerClient } from "@/core/database/server";
 import { NextRequest, NextResponse } from "next/server";
+import { requireAuth, requirePermission } from "@/core/permissions/server";
 
 // Application configuration for the organization - distinct from company
 // info (name, address, KVK, etc.), which lives on /api/organization.
 export async function GET() {
   try {
-    const supabase = await createServerClient();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
+    const auth = await requireAuth();
+    if (!auth.ok) return auth.response;
+    const { context } = auth;
+    const supabase = context.supabase;
 
-    if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
-    const { data: userData, error: userError } = await supabase
-      .from("users")
-      .select("organization_id")
-      .eq("id", user.id)
-      .single();
-
-    if (userError || !userData) {
-      console.error("[settings GET] Error fetching user:", userError);
-      return NextResponse.json({ error: "User not found" }, { status: 404 });
-    }
+    const permError = await requirePermission(context, "settings.view");
+    if (permError) return permError;
 
     const { data: settings, error } = await supabase
       .from("organization_settings")
       .select("*")
-      .eq("organization_id", userData.organization_id)
+      .eq("organization_id", context.organizationId)
       .single();
 
     if (error || !settings) {
@@ -45,25 +33,13 @@ export async function GET() {
 
 export async function PUT(request: NextRequest) {
   try {
-    const supabase = await createServerClient();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
+    const auth = await requireAuth();
+    if (!auth.ok) return auth.response;
+    const { context } = auth;
+    const supabase = context.supabase;
 
-    if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
-    const { data: userData, error: userError } = await supabase
-      .from("users")
-      .select("organization_id")
-      .eq("id", user.id)
-      .single();
-
-    if (userError || !userData) {
-      console.error("[settings PUT] Error fetching user:", userError);
-      return NextResponse.json({ error: "User not found" }, { status: 404 });
-    }
+    const permError = await requirePermission(context, "settings.manage");
+    if (permError) return permError;
 
     const body = await request.json();
     const {
@@ -108,7 +84,7 @@ export async function PUT(request: NextRequest) {
         brand_secondary_color: brandSecondaryColor ?? undefined,
         updated_at: new Date().toISOString(),
       })
-      .eq("organization_id", userData.organization_id)
+      .eq("organization_id", context.organizationId)
       .select();
 
     if (error) {

@@ -1,11 +1,14 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { createServerClient } from "@/core/database/server";
 import { NextRequest, NextResponse } from "next/server";
 import { updateAssignmentSchema } from "@/core/validation/assignment";
+import { requireAuth, requirePermission, writeAuditLog } from "@/core/permissions/server";
 
+// No permission gate on GET beyond org membership - see assignments/route.ts.
 export async function GET(_request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
-    const supabase = await createServerClient();
+    const auth = await requireAuth();
+    if (!auth.ok) return auth.response;
+    const { context } = auth;
     const { id } = await params;
 
     // Same fix as GET /api/assignments: employee_client_assignments has no
@@ -17,13 +20,16 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
     // error, so a real 500-class failure and a legitimate "no such id"
     // were being collapsed into the same fake 404. Fetching as a list and
     // branching on rows.length keeps those two cases distinguishable.
-    const { data: rows, error } = await (supabase.from("employee_client_assignments") as any)
+    const { data: rows, error } = await (
+      context.supabase.from("employee_client_assignments") as any
+    )
       .select(
         `*,
         employee:employees(id, first_name, last_name, is_active),
         client:clients(id, first_name, last_name, is_active, branch:branches(id, name))`
       )
       .eq("id", id)
+      .eq("organization_id", context.organizationId)
       .eq("is_deleted", false);
 
     if (error) {
@@ -53,20 +59,18 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
 
 export async function PUT(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
-    const supabase = await createServerClient();
+    const auth = await requireAuth();
+    if (!auth.ok) return auth.response;
+    const { context } = auth;
+    const supabase = context.supabase;
     const { id } = await params;
+
+    const permError = await requirePermission(context, "assignment.update");
+    if (permError) return permError;
+
     const body = await request.json();
 
     const validatedData = updateAssignmentSchema.parse(body);
-
-    const { data: userData } = await (supabase.from("users") as any)
-      .select("organization_id")
-      .eq("id", (await supabase.auth.getUser()).data.user?.id)
-      .single();
-
-    if (!userData) {
-      return NextResponse.json({ error: "User not found" }, { status: 404 });
-    }
 
     // Validate new employee if provided
     if (validatedData.employee_id) {
@@ -80,7 +84,7 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
         return NextResponse.json({ error: "Employee not found or inactive" }, { status: 400 });
       }
 
-      if (employee.organization_id !== userData.organization_id) {
+      if (employee.organization_id !== context.organizationId) {
         return NextResponse.json(
           { error: "Cross-organization assignment not allowed" },
           { status: 403 }
@@ -100,7 +104,7 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
         return NextResponse.json({ error: "Client not found or inactive" }, { status: 400 });
       }
 
-      if (client.organization_id !== userData.organization_id) {
+      if (client.organization_id !== context.organizationId) {
         return NextResponse.json(
           { error: "Cross-organization assignment not allowed" },
           { status: 403 }
@@ -122,6 +126,7 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
       const { data: current } = await (supabase.from("employee_client_assignments") as any)
         .select("employee_id, client_id, assigned_from, assigned_until")
         .eq("id", id)
+        .eq("organization_id", context.organizationId)
         .single();
 
       if (current) {
@@ -134,7 +139,7 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
           supabase.from("employee_client_assignments") as any
         )
           .select("id")
-          .eq("organization_id", userData.organization_id)
+          .eq("organization_id", context.organizationId)
           .eq("employee_id", finalEmployeeId)
           .eq("client_id", finalClientId)
           .eq("is_deleted", false)
@@ -166,18 +171,20 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
     const { data: assignment, error } = await (supabase.from("employee_client_assignments") as any)
       .update(updateData)
       .eq("id", id)
+      .eq("organization_id", context.organizationId)
       .select()
       .single();
 
     if (error) throw error;
 
-    // Log to audit logs
-    await (supabase.from("audit_logs") as any).insert({
-      organization_id: userData.organization_id,
-      user_id: (await supabase.auth.getUser()).data.user?.id,
-      event_type: "UPDATE",
-      resource_type: "assignments",
-      resource_id: id,
+    if (!assignment) {
+      return NextResponse.json({ error: "Assignment not found" }, { status: 404 });
+    }
+
+    await writeAuditLog(context, {
+      eventType: "UPDATE",
+      resourceType: "assignments",
+      resourceId: id,
       action: "updated",
       changes: { updates: updateData },
     });
@@ -197,37 +204,33 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const supabase = await createServerClient();
+    const auth = await requireAuth();
+    if (!auth.ok) return auth.response;
+    const { context } = auth;
     const { id } = await params;
 
-    const { data: userData } = await (supabase.from("users") as any)
-      .select("organization_id")
-      .eq("id", (await supabase.auth.getUser()).data.user?.id)
-      .single();
-
-    if (!userData) {
-      return NextResponse.json({ error: "User not found" }, { status: 404 });
-    }
+    const permError = await requirePermission(context, "assignment.delete");
+    if (permError) return permError;
 
     // Soft delete assignment
-    const { data: assignment, error } = await (supabase.from("employee_client_assignments") as any)
+    const { data: assignment, error } = await (
+      context.supabase.from("employee_client_assignments") as any
+    )
       .update({
         is_deleted: true,
         deleted_at: new Date().toISOString(),
       })
       .eq("id", id)
+      .eq("organization_id", context.organizationId)
       .select()
       .single();
 
     if (error) throw error;
 
-    // Log to audit logs
-    await (supabase.from("audit_logs") as any).insert({
-      organization_id: userData.organization_id,
-      user_id: (await supabase.auth.getUser()).data.user?.id,
-      event_type: "DELETE",
-      resource_type: "assignments",
-      resource_id: id,
+    await writeAuditLog(context, {
+      eventType: "DELETE",
+      resourceType: "assignments",
+      resourceId: id,
       action: "archived",
       changes: { deleted_at: new Date().toISOString() },
     });

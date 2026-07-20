@@ -1,33 +1,19 @@
-import { createServerClient } from "@/core/database/server";
 import { NextRequest, NextResponse } from "next/server";
 import { CreateInvoiceSchema, InvoiceFilterSchema } from "@/core/validation/billing-schemas";
 import { ZodError } from "zod";
+import { requireAuth, requirePermission, writeAuditLog } from "@/core/permissions/server";
 
 export async function GET(request: NextRequest) {
   try {
-    const supabase = await createServerClient();
+    const auth = await requireAuth();
+    if (!auth.ok) return auth.response;
+    const { context } = auth;
+    const supabase = context.supabase;
 
-    // Get authenticated user
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
+    const permError = await requirePermission(context, "billing.view");
+    if (permError) return permError;
 
-    if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
-    // Get user's organization
-    const { data: userData } = await supabase
-      .from("users")
-      .select("organization_id")
-      .eq("id", user.id)
-      .single();
-
-    if (!userData) {
-      return NextResponse.json({ error: "User not found" }, { status: 404 });
-    }
-
-    const organizationId = userData.organization_id;
+    const organizationId = context.organizationId;
 
     // Parse query parameters
     const searchParams = request.nextUrl.searchParams;
@@ -113,29 +99,15 @@ export async function GET(request: NextRequest) {
 
 export async function POST(request: NextRequest) {
   try {
-    const supabase = await createServerClient();
+    const auth = await requireAuth();
+    if (!auth.ok) return auth.response;
+    const { context } = auth;
+    const supabase = context.supabase;
 
-    // Get authenticated user
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
+    const permError = await requirePermission(context, "billing.manage");
+    if (permError) return permError;
 
-    if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
-    // Get user's organization
-    const { data: userData } = await supabase
-      .from("users")
-      .select("organization_id")
-      .eq("id", user.id)
-      .single();
-
-    if (!userData) {
-      return NextResponse.json({ error: "User not found" }, { status: 404 });
-    }
-
-    const organizationId = userData.organization_id;
+    const organizationId = context.organizationId;
 
     // Parse request body
     const body = await request.json();
@@ -143,10 +115,12 @@ export async function POST(request: NextRequest) {
     // Validate input
     const validatedData = CreateInvoiceSchema.parse(body);
 
-    // Check permission
+    // Check permission - select both the existence-check column and the
+    // notification-sending fields in one query, reused below instead of
+    // being re-fetched a second time after the invoice is created.
     const { data: client } = await supabase
       .from("clients")
-      .select("id")
+      .select("id, user_id, is_deleted")
       .eq("id", validatedData.clientId)
       .eq("organization_id", organizationId)
       .single();
@@ -189,8 +163,8 @@ export async function POST(request: NextRequest) {
         billing_profile_id: validatedData.billingProfileId,
         template_id: validatedData.templateId,
         notes: validatedData.notes,
-        created_by: user.id,
-        updated_by: user.id,
+        created_by: context.userId,
+        updated_by: context.userId,
         currency: "EUR",
       })
       .select()
@@ -201,51 +175,59 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Failed to create invoice" }, { status: 500 });
     }
 
-    // Create invoice items
-    for (let i = 0; i < validatedData.items.length; i++) {
-      const item = validatedData.items[i];
-      const itemSubtotal = item.quantity * item.unitPrice;
-      const itemVat = itemSubtotal * ((item.vatPercentage || vatPercentage) / 100);
-      const itemTotal = itemSubtotal + itemVat;
+    // Create invoice items in a single batched insert instead of one round
+    // trip per item.
+    const { error: itemsError } = await supabase.from("invoice_items").insert(
+      validatedData.items.map((item, i) => {
+        const itemSubtotal = item.quantity * item.unitPrice;
+        const itemVat = itemSubtotal * ((item.vatPercentage || vatPercentage) / 100);
+        const itemTotal = itemSubtotal + itemVat;
 
-      await supabase.from("invoice_items").insert({
-        organization_id: organizationId,
-        invoice_id: invoice.id,
-        visit_id: item.visitId,
-        description: item.description,
-        quantity: item.quantity,
-        unit_price: item.unitPrice,
-        rate_type: item.rateType,
-        vat_percentage: item.vatPercentage || vatPercentage,
-        subtotal: itemSubtotal,
-        vat_amount: itemVat,
-        total_amount: itemTotal,
-        line_number: i + 1,
-        created_by: user.id,
-      });
+        return {
+          organization_id: organizationId,
+          invoice_id: invoice.id,
+          visit_id: item.visitId,
+          description: item.description,
+          quantity: item.quantity,
+          unit_price: item.unitPrice,
+          rate_type: item.rateType,
+          vat_percentage: item.vatPercentage || vatPercentage,
+          subtotal: itemSubtotal,
+          vat_amount: itemVat,
+          total_amount: itemTotal,
+          line_number: i + 1,
+          created_by: context.userId,
+        };
+      })
+    );
+
+    if (itemsError) {
+      console.error("Failed to create invoice items:", itemsError);
+      // Without this, the invoice header would be left behind with a real
+      // total_amount/remaining_balance but zero line items - a real
+      // customer could be shown (or sent a PDF of) an invoice with a
+      // balance owed and no itemization to explain it, with nothing in the
+      // API response signaling anything went wrong. Roll back the header
+      // so the operation is all-or-nothing instead.
+      await supabase.from("invoices").delete().eq("id", invoice.id);
+      return NextResponse.json(
+        { error: "Failed to create invoice line items - invoice was not created" },
+        { status: 500 }
+      );
     }
 
-    // Log to audit trail
-    await supabase.from("audit_logs").insert({
-      organization_id: organizationId,
-      user_id: user.id,
-      event_type: "CREATE",
-      resource_type: "invoices",
-      resource_id: invoice.id,
+    await writeAuditLog(context, {
+      eventType: "CREATE",
+      resourceType: "invoices",
+      resourceId: invoice.id,
       action: "created",
       changes: { new_values: invoice },
     });
 
-    // Auto-generate notification for invoice creation
+    // Auto-generate notification for invoice creation - reuses the client
+    // row already fetched above instead of re-querying it.
     try {
-      const { data: client } = await supabase
-        .from("clients")
-        .select("user_id")
-        .eq("id", validatedData.clientId)
-        .eq("is_deleted", false)
-        .single();
-
-      if (client?.user_id) {
+      if (!client.is_deleted && client.user_id) {
         await supabase.from("notifications").insert({
           organization_id: organizationId,
           user_id: client.user_id,

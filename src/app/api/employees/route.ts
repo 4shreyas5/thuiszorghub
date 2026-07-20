@@ -1,33 +1,20 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { createServerClient } from "@/core/database/server";
 import { NextRequest, NextResponse } from "next/server";
 import { createEmployeeSchema } from "@/core/validation/employee";
+import { requireAuth, requirePermission, writeAuditLog } from "@/core/permissions/server";
 
 const VALID_STATUSES = ["active", "inactive", "on_leave", "archived"];
 
+// Deliberately no permission gate on GET beyond org membership: employee
+// names/ids feed pickers on Assignments/Care Plans/Visits/Scheduling/
+// Reports used by most roles for everyday work - only the mutation
+// endpoints below are gated.
 export async function GET(request: NextRequest) {
   try {
-    const supabase = await createServerClient();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-
-    if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
-    const { data: userData } = await supabase
-      .from("users")
-      .select("organization_id")
-      .eq("id", user.id)
-      .single();
-
-    if (!userData || !userData.organization_id) {
-      return NextResponse.json(
-        { error: "User not found or not assigned to organization" },
-        { status: 404 }
-      );
-    }
+    const auth = await requireAuth();
+    if (!auth.ok) return auth.response;
+    const { context } = auth;
+    const supabase = context.supabase;
 
     const searchParams = request.nextUrl.searchParams;
 
@@ -43,12 +30,13 @@ export async function GET(request: NextRequest) {
 
     const offset = (page - 1) * limit;
 
-    // Shared filter application so the data query and the count query can
-    // never drift apart (previously the count query ignored search/branch/
-    // status entirely, so pagination.total didn't match the filtered
-    // results - a genuine bug, fixed here by applying filters once).
+    // Shared filter application, reused for the single query below. This
+    // used to back two separate round trips (a data query and a second,
+    // identically-filtered count-only query) - now count comes from the
+    // same query via { count: "exact" }, halving the round trips with no
+    // change to which rows are counted.
     const applyFilters = (q: any) => {
-      q = q.eq("organization_id", userData.organization_id);
+      q = q.eq("organization_id", context.organizationId);
 
       if (search) {
         q = q.or(
@@ -71,16 +59,14 @@ export async function GET(request: NextRequest) {
     };
 
     const query = applyFilters(
-      (supabase.from("employees") as any).select("*, branch:branches(id, name)")
+      (supabase.from("employees") as any).select("*, branch:branches(id, name)", {
+        count: "exact",
+      })
     ).order(sortBy, { ascending: sortOrder === "asc" });
 
-    const { data: employees, error } = await query.range(offset, offset + limit - 1);
+    const { data: employees, error, count } = await query.range(offset, offset + limit - 1);
 
     if (error) throw error;
-
-    const { count } = await applyFilters(
-      (supabase.from("employees") as any).select("*", { count: "exact", head: true })
-    );
 
     return NextResponse.json({
       employees: employees || [],
@@ -99,26 +85,19 @@ export async function GET(request: NextRequest) {
 
 export async function POST(request: NextRequest) {
   try {
-    const supabase = await createServerClient();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
+    const auth = await requireAuth();
+    if (!auth.ok) return auth.response;
+    const { context } = auth;
 
-    if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    const permError = await requirePermission(context, "employee.create");
+    if (permError) return permError;
+
+    let body: unknown;
+    try {
+      body = await request.json();
+    } catch {
+      return NextResponse.json({ error: "Malformed request body" }, { status: 400 });
     }
-
-    const { data: userData } = await supabase
-      .from("users")
-      .select("organization_id")
-      .eq("id", user.id)
-      .single();
-
-    if (!userData) {
-      return NextResponse.json({ error: "User not found" }, { status: 404 });
-    }
-
-    const body = await request.json();
     const parsed = createEmployeeSchema.safeParse(body);
 
     if (!parsed.success) {
@@ -134,9 +113,9 @@ export async function POST(request: NextRequest) {
 
     const data = parsed.data;
 
-    const { data: employee, error } = await (supabase.from("employees") as any)
+    const { data: employee, error } = await (context.supabase.from("employees") as any)
       .insert({
-        organization_id: userData.organization_id,
+        organization_id: context.organizationId,
         first_name: data.first_name,
         last_name: data.last_name,
         email: data.email,
@@ -158,14 +137,12 @@ export async function POST(request: NextRequest) {
 
     if (error) throw error;
 
-    // Log to audit logs
-    await (supabase.from("audit_logs") as any).insert({
-      organization_id: userData.organization_id,
-      user_id: user.id,
-      action: "create",
-      entity_type: "employees",
-      entity_id: employee.id,
-      changes: { employee },
+    await writeAuditLog(context, {
+      eventType: "CREATE",
+      resourceType: "employees",
+      resourceId: employee.id,
+      action: "created",
+      changes: { new_values: employee },
     });
 
     return NextResponse.json(employee, { status: 201 });

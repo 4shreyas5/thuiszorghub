@@ -1,26 +1,14 @@
-import { createServerClient } from "@/core/database/server";
 import { NextRequest, NextResponse } from "next/server";
+import { requireAuth, requirePermission } from "@/core/permissions/server";
 
 export async function GET(request: NextRequest) {
   try {
-    const supabase = await createServerClient();
-    const { data: { user } } = await supabase.auth.getUser();
+    const auth = await requireAuth();
+    if (!auth.ok) return auth.response;
+    const { context } = auth;
+    const supabase = context.supabase;
 
-    if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
-    const { data: userData } = await supabase
-      .from("users")
-      .select("organization_id")
-      .eq("id", user.id)
-      .single();
-
-    if (!userData) {
-      return NextResponse.json({ error: "User not found" }, { status: 404 });
-    }
-
-    const organizationId = userData.organization_id;
+    const organizationId = context.organizationId;
     const searchParams = request.nextUrl.searchParams;
 
     const filters = {
@@ -61,8 +49,7 @@ export async function GET(request: NextRequest) {
     }
 
     const offset = (filters.page - 1) * filters.limit;
-    const { data: documents, count, error } = await query
-      .range(offset, offset + filters.limit - 1);
+    const { data: documents, count, error } = await query.range(offset, offset + filters.limit - 1);
 
     if (error) throw error;
 
@@ -77,34 +64,30 @@ export async function GET(request: NextRequest) {
     });
   } catch (error) {
     console.error("Error fetching documents:", error);
-    return NextResponse.json(
-      { error: "Internal server error" },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }
 
 export async function POST(request: NextRequest) {
   try {
-    const supabase = await createServerClient();
-    const { data: { user } } = await supabase.auth.getUser();
+    const auth = await requireAuth();
+    if (!auth.ok) return auth.response;
+    const { context } = auth;
+    const supabase = context.supabase;
 
-    if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    const permError = await requirePermission(context, "document.upload");
+    if (permError) return permError;
+
+    const organizationId = context.organizationId;
+    let formData: FormData;
+    try {
+      formData = await request.formData();
+    } catch {
+      return NextResponse.json(
+        { error: "Malformed request - expected multipart/form-data" },
+        { status: 400 }
+      );
     }
-
-    const { data: userData } = await supabase
-      .from("users")
-      .select("organization_id")
-      .eq("id", user.id)
-      .single();
-
-    if (!userData) {
-      return NextResponse.json({ error: "User not found" }, { status: 404 });
-    }
-
-    const organizationId = userData.organization_id;
-    const formData = await request.formData();
 
     const entityType = formData.get("entityType") as string;
     const entityId = formData.get("entityId") as string;
@@ -113,19 +96,13 @@ export async function POST(request: NextRequest) {
     const file = formData.get("file") as File;
 
     if (!entityType || !entityId || !documentType || !file) {
-      return NextResponse.json(
-        { error: "Missing required fields" },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
     }
 
     // Validate file size (max 50MB)
     const MAX_FILE_SIZE = 50 * 1024 * 1024;
     if (file.size > MAX_FILE_SIZE) {
-      return NextResponse.json(
-        { error: "File too large (max 50MB)" },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: "File too large (max 50MB)" }, { status: 400 });
     }
 
     // Allowed MIME types
@@ -142,10 +119,7 @@ export async function POST(request: NextRequest) {
     ];
 
     if (!ALLOWED_TYPES.includes(file.type)) {
-      return NextResponse.json(
-        { error: "Unsupported file type" },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: "Unsupported file type" }, { status: 400 });
     }
 
     const bucketName = "documents";
@@ -175,7 +149,7 @@ export async function POST(request: NextRequest) {
         file_size: file.size,
         mime_type: file.type,
         bucket_name: bucketName,
-        uploaded_by: user.id,
+        uploaded_by: context.userId,
         expiry_date: expiryDate || null,
       })
       .select()
@@ -184,22 +158,17 @@ export async function POST(request: NextRequest) {
     if (dbError) throw dbError;
 
     // Log the action
-    await supabase
-      .from("document_audit_logs")
-      .insert({
-        organization_id: organizationId,
-        document_id: document.id,
-        user_id: user.id,
-        action: "upload",
-        action_details: { file_name: file.name, file_size: file.size },
-      });
+    await supabase.from("document_audit_logs").insert({
+      organization_id: organizationId,
+      document_id: document.id,
+      user_id: context.userId,
+      action: "upload",
+      action_details: { file_name: file.name, file_size: file.size },
+    });
 
     return NextResponse.json({ data: document }, { status: 201 });
   } catch (error) {
     console.error("Error uploading document:", error);
-    return NextResponse.json(
-      { error: "Internal server error" },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }

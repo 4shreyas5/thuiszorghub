@@ -1,8 +1,8 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { createServerClient } from "@/core/database/server";
 import { NextRequest, NextResponse } from "next/server";
 import { completeReviewSchema } from "@/core/validation/care-plan";
 import { z } from "zod";
+import { requireAuth, requirePermission } from "@/core/permissions/server";
 
 export const dynamic = "force-dynamic";
 
@@ -11,13 +11,19 @@ export async function PUT(
   { params }: { params: Promise<{ reviewId: string }> }
 ) {
   try {
+    const auth = await requireAuth();
+    if (!auth.ok) return auth.response;
+    const { context } = auth;
+
+    const permError = await requirePermission(context, "care_plan.update");
+    if (permError) return permError;
+
     const { reviewId } = await params;
-    const supabase = await createServerClient();
     const body = await request.json();
 
     const validated = completeReviewSchema.parse(body);
 
-    const { data: existing } = await (supabase.from("care_plan_reviews") as any)
+    const { data: existing } = await (context.supabase.from("care_plan_reviews") as any)
       .select("*")
       .eq("id", reviewId)
       .eq("is_deleted", false)
@@ -27,17 +33,27 @@ export async function PUT(
       return NextResponse.json({ error: "Review not found" }, { status: 404 });
     }
 
-    const { data: userData } = await (supabase.auth.getUser() as any);
-    const userId = userData?.user?.id;
+    // care_plan_reviews has no organization_id of its own - verify the
+    // parent care plan belongs to the caller's org before allowing the write.
+    const { data: carePlan } = await (context.supabase.from("care_plans") as any)
+      .select("id")
+      .eq("id", existing.care_plan_id)
+      .eq("organization_id", context.organizationId)
+      .single();
+
+    if (!carePlan) {
+      return NextResponse.json({ error: "Review not found" }, { status: 404 });
+    }
 
     const updateData = {
       ...validated,
-      completed_date: validated.status === "completed" ? new Date().toISOString().split("T")[0] : null,
-      reviewer_id: validated.status === "completed" ? userId : null,
+      completed_date:
+        validated.status === "completed" ? new Date().toISOString().split("T")[0] : null,
+      reviewer_id: validated.status === "completed" ? context.userId : null,
       updated_at: new Date().toISOString(),
     };
 
-    const { data, error } = await (supabase.from("care_plan_reviews") as any)
+    const { data, error } = await (context.supabase.from("care_plan_reviews") as any)
       .update(updateData)
       .eq("id", reviewId)
       .select()
@@ -59,11 +75,17 @@ export async function DELETE(
   { params }: { params: Promise<{ reviewId: string }> }
 ) {
   try {
-    const { reviewId } = await params;
-    const supabase = await createServerClient();
+    const auth = await requireAuth();
+    if (!auth.ok) return auth.response;
+    const { context } = auth;
 
-    const { data: existing } = await (supabase.from("care_plan_reviews") as any)
-      .select("id")
+    const permError = await requirePermission(context, "care_plan.delete");
+    if (permError) return permError;
+
+    const { reviewId } = await params;
+
+    const { data: existing } = await (context.supabase.from("care_plan_reviews") as any)
+      .select("id, care_plan_id")
       .eq("id", reviewId)
       .eq("is_deleted", false)
       .single();
@@ -72,8 +94,20 @@ export async function DELETE(
       return NextResponse.json({ error: "Review not found" }, { status: 404 });
     }
 
+    // care_plan_reviews has no organization_id of its own - verify the
+    // parent care plan belongs to the caller's org before allowing the write.
+    const { data: carePlan } = await (context.supabase.from("care_plans") as any)
+      .select("id")
+      .eq("id", existing.care_plan_id)
+      .eq("organization_id", context.organizationId)
+      .single();
+
+    if (!carePlan) {
+      return NextResponse.json({ error: "Review not found" }, { status: 404 });
+    }
+
     const now = new Date().toISOString();
-    await (supabase.from("care_plan_reviews") as any)
+    await (context.supabase.from("care_plan_reviews") as any)
       .update({ is_deleted: true, deleted_at: now, status: "cancelled" })
       .eq("id", reviewId);
 

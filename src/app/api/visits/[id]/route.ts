@@ -1,15 +1,18 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { createServerClient } from "@/core/database/server";
 import { NextRequest, NextResponse } from "next/server";
 import { updateVisitSchema } from "@/core/validation/visit";
 import { checkVisitConflicts } from "@/core/scheduling/conflicts";
+import { requireAuth, requirePermission, writeAuditLog } from "@/core/permissions/server";
 
+// No permission gate beyond org membership - see visits/route.ts.
 export async function GET(_request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const auth = await requireAuth();
+    if (!auth.ok) return auth.response;
+    const { context } = auth;
     const { id } = await params;
-    const supabase = await createServerClient();
 
-    const { data: visit, error } = await (supabase.from("scheduled_visits") as any)
+    const { data: visit, error } = await (context.supabase.from("scheduled_visits") as any)
       .select(
         `*,
         client:clients(id, first_name, last_name, email, is_active),
@@ -19,13 +22,14 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
         checklists:visit_checklists(*)`
       )
       .eq("id", id)
+      .eq("organization_id", context.organizationId)
       .eq("is_deleted", false)
       .single();
 
-    if (error) throw error;
-    if (!visit) {
+    if (error?.code === "PGRST116" || error?.code === "22P02" || !visit) {
       return NextResponse.json({ error: "Visit not found" }, { status: 404 });
     }
+    if (error) throw error;
 
     return NextResponse.json(visit);
   } catch (error) {
@@ -36,23 +40,23 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
 
 export async function PUT(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const auth = await requireAuth();
+    if (!auth.ok) return auth.response;
+    const { context } = auth;
     const { id } = await params;
-    const supabase = await createServerClient();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
 
-    if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
+    const permError = await requirePermission(context, "visit.update");
+    if (permError) return permError;
 
+    const supabase = context.supabase;
     const body = await request.json();
     const validatedData = updateVisitSchema.parse(body);
 
-    // Get existing visit
+    // Get existing visit - scoped to the caller's own org, not the row's.
     const { data: existingVisit } = await (supabase.from("scheduled_visits") as any)
       .select("*")
       .eq("id", id)
+      .eq("organization_id", context.organizationId)
       .eq("is_deleted", false)
       .single();
 
@@ -60,7 +64,7 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
       return NextResponse.json({ error: "Visit not found" }, { status: 404 });
     }
 
-    const organizationId = existingVisit.organization_id;
+    const organizationId = context.organizationId;
 
     // Validate client if changed
     if (validatedData.client_id && validatedData.client_id !== existingVisit.client_id) {
@@ -142,18 +146,16 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
         updated_at: new Date().toISOString(),
       })
       .eq("id", id)
+      .eq("organization_id", organizationId)
       .select()
       .single();
 
     if (error) throw error;
 
-    // Log to audit logs
-    await (supabase.from("audit_logs") as any).insert({
-      organization_id: organizationId,
-      user_id: user.id,
-      event_type: "UPDATE",
-      resource_type: "scheduled_visits",
-      resource_id: id,
+    await writeAuditLog(context, {
+      eventType: "UPDATE",
+      resourceType: "scheduled_visits",
+      resourceId: id,
       action: "updated",
       changes: { previous_values: existingVisit, new_values: visit },
     });
@@ -163,7 +165,7 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
       organization_id: organizationId,
       scheduled_visit_id: id,
       action: "updated",
-      action_by_id: user.id,
+      action_by_id: context.userId,
       previous_values: existingVisit,
       new_values: visit,
     });
@@ -180,16 +182,15 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
 
 export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const auth = await requireAuth();
+    if (!auth.ok) return auth.response;
+    const { context } = auth;
     const { id } = await params;
-    const supabase = await createServerClient();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
 
-    if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
+    const permError = await requirePermission(context, "visit.update");
+    if (permError) return permError;
 
+    const supabase = context.supabase;
     const body = await request.json();
 
     // Validated against the same schema PUT uses - this previously spread
@@ -198,10 +199,11 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     // organization_id, could be overwritten by whatever the caller sent).
     const validatedData = updateVisitSchema.parse(body);
 
-    // Get existing visit
+    // Get existing visit - scoped to the caller's own org, not the row's.
     const { data: existingVisit } = await (supabase.from("scheduled_visits") as any)
       .select("*")
       .eq("id", id)
+      .eq("organization_id", context.organizationId)
       .single();
 
     if (!existingVisit) {
@@ -215,28 +217,26 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
         updated_at: new Date().toISOString(),
       })
       .eq("id", id)
+      .eq("organization_id", context.organizationId)
       .select()
       .single();
 
     if (error) throw error;
 
-    // Log to audit logs
-    await (supabase.from("audit_logs") as any).insert({
-      organization_id: existingVisit.organization_id,
-      user_id: user.id,
-      event_type: "UPDATE",
-      resource_type: "scheduled_visits",
-      resource_id: id,
+    await writeAuditLog(context, {
+      eventType: "UPDATE",
+      resourceType: "scheduled_visits",
+      resourceId: id,
       action: "updated",
       changes: { previous_values: existingVisit, new_values: visit },
     });
 
     // Log to visit history
     await (supabase.from("visit_history") as any).insert({
-      organization_id: existingVisit.organization_id,
+      organization_id: context.organizationId,
       scheduled_visit_id: id,
       action: "updated",
-      action_by_id: user.id,
+      action_by_id: context.userId,
       previous_values: existingVisit,
       new_values: visit,
     });
@@ -253,20 +253,21 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const auth = await requireAuth();
+    if (!auth.ok) return auth.response;
+    const { context } = auth;
     const { id } = await params;
-    const supabase = await createServerClient();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
 
-    if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
+    const permError = await requirePermission(context, "visit.delete");
+    if (permError) return permError;
 
-    // Get existing visit
+    const supabase = context.supabase;
+
+    // Get existing visit - scoped to the caller's own org, not the row's.
     const { data: existingVisit } = await (supabase.from("scheduled_visits") as any)
       .select("*")
       .eq("id", id)
+      .eq("organization_id", context.organizationId)
       .single();
 
     if (!existingVisit) {
@@ -279,27 +280,25 @@ export async function DELETE(
         is_deleted: true,
         deleted_at: new Date().toISOString(),
       })
-      .eq("id", id);
+      .eq("id", id)
+      .eq("organization_id", context.organizationId);
 
     if (error) throw error;
 
-    // Log to audit logs
-    await (supabase.from("audit_logs") as any).insert({
-      organization_id: existingVisit.organization_id,
-      user_id: user.id,
-      event_type: "DELETE",
-      resource_type: "scheduled_visits",
-      resource_id: id,
+    await writeAuditLog(context, {
+      eventType: "DELETE",
+      resourceType: "scheduled_visits",
+      resourceId: id,
       action: "deleted",
       changes: { previous_values: existingVisit },
     });
 
     // Log to visit history
     await (supabase.from("visit_history") as any).insert({
-      organization_id: existingVisit.organization_id,
+      organization_id: context.organizationId,
       scheduled_visit_id: id,
       action: "deleted",
-      action_by_id: user.id,
+      action_by_id: context.userId,
       previous_values: existingVisit,
     });
 

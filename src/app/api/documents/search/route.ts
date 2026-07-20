@@ -1,24 +1,12 @@
-import { createServerClient } from "@/core/database/server";
 import { NextRequest, NextResponse } from "next/server";
+import { requireAuth } from "@/core/permissions/server";
 
 export async function GET(request: NextRequest) {
   try {
-    const supabase = await createServerClient();
-    const { data: { user } } = await supabase.auth.getUser();
-
-    if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
-    const { data: userData } = await supabase
-      .from("users")
-      .select("organization_id")
-      .eq("id", user.id)
-      .single();
-
-    if (!userData) {
-      return NextResponse.json({ error: "User not found" }, { status: 404 });
-    }
+    const auth = await requireAuth();
+    if (!auth.ok) return auth.response;
+    const { context } = auth;
+    const supabase = context.supabase;
 
     const searchParams = request.nextUrl.searchParams;
     const query = searchParams.get("q") || "";
@@ -32,7 +20,7 @@ export async function GET(request: NextRequest) {
     const { data: documents, error } = await supabase
       .from("documents")
       .select("*")
-      .eq("organization_id", userData.organization_id)
+      .eq("organization_id", context.organizationId)
       .eq("is_deleted", false)
       .ilike("file_name", `%${query}%`)
       .limit(limit);
@@ -42,9 +30,6 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ data: documents || [] });
   } catch (error) {
     console.error("Error searching documents:", error);
-    return NextResponse.json(
-      { error: "Internal server error" },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }

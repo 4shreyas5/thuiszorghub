@@ -1,15 +1,13 @@
-'use client';
+"use client";
 
-import { useState } from 'react';
-import { useRouter } from 'next/navigation';
-import Link from 'next/link';
-import { useAuthActions } from '@/hooks/useAuthActions';
+import { useState } from "react";
+import Link from "next/link";
+import { useAuthActions } from "@/hooks/useAuthActions";
 
 export default function LoginPage() {
-  const router = useRouter();
   const { signIn, isLoading, error } = useAuthActions();
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [localError, setLocalError] = useState<string | null>(null);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -17,20 +15,28 @@ export default function LoginPage() {
     setLocalError(null);
 
     if (!email || !password) {
-      setLocalError('Email and password are required');
+      setLocalError("Email and password are required");
       return;
     }
 
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-      setLocalError('Please enter a valid email address');
+      setLocalError("Please enter a valid email address");
       return;
     }
 
     try {
       await signIn({ email, password });
-      router.push('/admin');
+      // A full navigation (not router.push) is required here: AuthProvider
+      // only initializes its user/session/organizationId state once, on
+      // mount, and a client-side push into /admin re-uses that same mount
+      // from the /auth/login page load - before this user was signed in.
+      // The result was a real bug: every login landed on a stale-looking
+      // admin shell (blank dashboard, no org name) until the user manually
+      // reloaded. A full navigation remounts the app and re-reads the
+      // now-authenticated session correctly.
+      window.location.href = "/admin";
     } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : 'Login failed. Please try again.';
+      const errorMsg = err instanceof Error ? err.message : "Login failed. Please try again.";
       setLocalError(errorMsg);
     }
   };
@@ -39,7 +45,9 @@ export default function LoginPage() {
     <div className="space-y-6">
       <div>
         <h2 className="text-2xl font-bold text-gray-900">Sign In</h2>
-        <p className="text-gray-600 text-sm mt-2">Welcome back to your homecare management platform</p>
+        <p className="text-gray-600 text-sm mt-2">
+          Welcome back to your homecare management platform
+        </p>
       </div>
 
       <form onSubmit={handleSubmit} className="space-y-4">
@@ -84,7 +92,7 @@ export default function LoginPage() {
           disabled={isLoading}
           className="w-full bg-blue-600 text-white py-2 rounded-lg font-medium hover:bg-blue-700 transition disabled:opacity-50 disabled:cursor-not-allowed"
         >
-          {isLoading ? 'Signing in...' : 'Sign In'}
+          {isLoading ? "Signing in..." : "Sign In"}
         </button>
       </form>
 
@@ -96,7 +104,7 @@ export default function LoginPage() {
           Forgot your password?
         </Link>
         <div className="text-gray-600">
-          Don&apos;t have an account?{' '}
+          Don&apos;t have an account?{" "}
           <Link href="/auth/register" className="text-blue-600 hover:text-blue-700 font-medium">
             Sign up
           </Link>

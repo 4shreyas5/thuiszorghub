@@ -1,29 +1,17 @@
-import { createServerClient } from "@/core/database/server";
 import { NextRequest, NextResponse } from "next/server";
 import { TimesheetFilterSchema } from "@/core/validation/billing-schemas";
 import { ZodError } from "zod";
+import { requireAuth, requirePermission } from "@/core/permissions/server";
 
 export async function GET(request: NextRequest) {
   try {
-    const supabase = await createServerClient();
+    const auth = await requireAuth();
+    if (!auth.ok) return auth.response;
+    const { context } = auth;
+    const supabase = context.supabase;
 
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-
-    if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
-    const { data: userData } = await supabase
-      .from("users")
-      .select("organization_id")
-      .eq("id", user.id)
-      .single();
-
-    if (!userData) {
-      return NextResponse.json({ error: "User not found" }, { status: 404 });
-    }
+    const permError = await requirePermission(context, "billing.view");
+    if (permError) return permError;
 
     const searchParams = request.nextUrl.searchParams;
     const filterData = {
@@ -32,12 +20,8 @@ export async function GET(request: NextRequest) {
       startDate: searchParams.get("startDate")
         ? new Date(searchParams.get("startDate")!)
         : undefined,
-      endDate: searchParams.get("endDate")
-        ? new Date(searchParams.get("endDate")!)
-        : undefined,
-      isBilled: searchParams.get("isBilled")
-        ? searchParams.get("isBilled") === "true"
-        : undefined,
+      endDate: searchParams.get("endDate") ? new Date(searchParams.get("endDate")!) : undefined,
+      isBilled: searchParams.get("isBilled") ? searchParams.get("isBilled") === "true" : undefined,
       limit: parseInt(searchParams.get("limit") || "20"),
       offset: parseInt(searchParams.get("offset") || "0"),
     };
@@ -55,7 +39,7 @@ export async function GET(request: NextRequest) {
       `,
         { count: "exact" }
       )
-      .eq("organization_id", userData.organization_id)
+      .eq("organization_id", context.organizationId)
       .eq("is_deleted", false)
       .order("visit_date", { ascending: false })
       .range(validatedFilters.offset, validatedFilters.offset + validatedFilters.limit - 1);
@@ -69,17 +53,11 @@ export async function GET(request: NextRequest) {
     }
 
     if (validatedFilters.startDate) {
-      query = query.gte(
-        "visit_date",
-        validatedFilters.startDate.toISOString().split("T")[0]
-      );
+      query = query.gte("visit_date", validatedFilters.startDate.toISOString().split("T")[0]);
     }
 
     if (validatedFilters.endDate) {
-      query = query.lte(
-        "visit_date",
-        validatedFilters.endDate.toISOString().split("T")[0]
-      );
+      query = query.lte("visit_date", validatedFilters.endDate.toISOString().split("T")[0]);
     }
 
     if (validatedFilters.isBilled !== undefined) {
@@ -90,10 +68,7 @@ export async function GET(request: NextRequest) {
 
     if (error) {
       console.error("Database error:", error);
-      return NextResponse.json(
-        { error: "Failed to fetch timesheets" },
-        { status: 500 }
-      );
+      return NextResponse.json({ error: "Failed to fetch timesheets" }, { status: 500 });
     }
 
     return NextResponse.json({

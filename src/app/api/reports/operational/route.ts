@@ -1,5 +1,5 @@
-import { createServerClient } from "@/core/database/server";
 import { NextRequest, NextResponse } from "next/server";
+import { requireAuth, requirePermission } from "@/core/permissions/server";
 
 interface OperationalFilters {
   startDate?: string | undefined;
@@ -13,26 +13,15 @@ interface OperationalFilters {
 
 export async function GET(request: NextRequest) {
   try {
-    const supabase = await createServerClient();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
+    const auth = await requireAuth();
+    if (!auth.ok) return auth.response;
+    const { context } = auth;
+    const supabase = context.supabase;
 
-    if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
+    const permError = await requirePermission(context, "report.view");
+    if (permError) return permError;
 
-    const { data: userData } = await supabase
-      .from("users")
-      .select("organization_id")
-      .eq("id", user.id)
-      .single();
-
-    if (!userData) {
-      return NextResponse.json({ error: "User not found" }, { status: 404 });
-    }
-
-    const organizationId = userData.organization_id;
+    const organizationId = context.organizationId;
 
     // Parse filters
     const searchParams = request.nextUrl.searchParams;
@@ -78,22 +67,26 @@ export async function GET(request: NextRequest) {
     if (filters.visitType) query = query.eq("visit_type", filters.visitType);
     if (filters.status) query = query.eq("status", filters.status);
 
-    const { data: scheduledVisits, error: scheduledError } = await query;
-
-    if (scheduledError) throw scheduledError;
-
-    // Get visit executions for completion rates. visit_executions has no
-    // employee_id/client_id/executed_date columns of its own (see
-    // supabase/migrations/009_create_visit_execution.sql and the gotcha
-    // documented in 011_reporting_analytics.sql:99-101) - those live on the
-    // parent scheduled_visits row, so date-range filtering uses the
-    // execution's own completed_at (same convention already proven in
-    // src/core/billing/billing-engine.ts), and employee/client filtering
-    // happens client-side on the embedded scheduled_visits fields.
-    const { data: rawExecutions, error: executionError } = await supabase
-      .from("visit_executions")
-      .select(
-        `
+    // scheduledVisits, visit_executions and assignments are independent
+    // queries (none filters on another's result) - run them concurrently.
+    const [
+      { data: scheduledVisits, error: scheduledError },
+      { data: rawExecutions, error: executionError },
+      { data: assignments },
+    ] = await Promise.all([
+      query,
+      // Get visit executions for completion rates. visit_executions has no
+      // employee_id/client_id/executed_date columns of its own (see
+      // supabase/migrations/009_create_visit_execution.sql and the gotcha
+      // documented in 011_reporting_analytics.sql:99-101) - those live on the
+      // parent scheduled_visits row, so date-range filtering uses the
+      // execution's own completed_at (same convention already proven in
+      // src/core/billing/billing-engine.ts), and employee/client filtering
+      // happens client-side on the embedded scheduled_visits fields.
+      supabase
+        .from("visit_executions")
+        .select(
+          `
         id,
         status,
         scheduled_visit_id,
@@ -101,11 +94,20 @@ export async function GET(request: NextRequest) {
         completed_at,
         scheduled_visits(employee_id, client_id, branch_id)
       `
-      )
-      .eq("organization_id", organizationId)
-      .gte("completed_at", `${startDate}T00:00:00Z`)
-      .lte("completed_at", `${endDate}T23:59:59Z`);
+        )
+        .eq("organization_id", organizationId)
+        .gte("completed_at", `${startDate}T00:00:00Z`)
+        .lte("completed_at", `${endDate}T23:59:59Z`),
+      // Get assignments count
+      supabase
+        .from("assignments")
+        .select("id")
+        .eq("organization_id", organizationId)
+        .eq("is_deleted", false)
+        .gte("created_at", startDate),
+    ]);
 
+    if (scheduledError) throw scheduledError;
     if (executionError) throw executionError;
 
     const executions = (rawExecutions || []).filter((e) => {
@@ -135,14 +137,6 @@ export async function GET(request: NextRequest) {
     const uniqueEmployees = new Set(scheduledVisits?.map((v) => v.employee_id) || []).size;
     const uniqueClients = new Set(scheduledVisits?.map((v) => v.client_id) || []).size;
 
-    // Get assignments count
-    const { data: assignments } = await supabase
-      .from("assignments")
-      .select("id")
-      .eq("organization_id", organizationId)
-      .eq("is_deleted", false)
-      .gte("created_at", startDate);
-
     // Daily visit counts
     const visitsByDay: Record<string, number> = {};
     scheduledVisits?.forEach((v) => {
@@ -166,7 +160,7 @@ export async function GET(request: NextRequest) {
     // Log the report
     await supabase.from("report_audit_logs").insert({
       organization_id: organizationId,
-      user_id: user.id,
+      user_id: context.userId,
       report_type: "operational",
       action: "generated",
       filters,

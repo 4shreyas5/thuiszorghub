@@ -1,33 +1,20 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { createServerClient } from "@/core/database/server";
 import { NextRequest, NextResponse } from "next/server";
 import { createClientSchema } from "@/core/validation/client";
+import { requireAuth, requirePermission, writeAuditLog } from "@/core/permissions/server";
 
 const VALID_STATUSES = ["active", "inactive", "archived"];
 
+// Deliberately no permission gate on GET beyond org membership - client
+// names/ids feed pickers on Assignments/Care Plans/Visits/Scheduling/
+// Reports used by most roles for everyday work - only the mutation
+// endpoints below are gated.
 export async function GET(request: NextRequest) {
   try {
-    const supabase = await createServerClient();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-
-    if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
-    const { data: userData } = await supabase
-      .from("users")
-      .select("organization_id")
-      .eq("id", user.id)
-      .single();
-
-    if (!userData || !userData.organization_id) {
-      return NextResponse.json(
-        { error: "User not found or not assigned to organization" },
-        { status: 404 }
-      );
-    }
+    const auth = await requireAuth();
+    if (!auth.ok) return auth.response;
+    const { context } = auth;
+    const supabase = context.supabase;
 
     const searchParams = request.nextUrl.searchParams;
 
@@ -43,11 +30,13 @@ export async function GET(request: NextRequest) {
 
     const offset = (page - 1) * limit;
 
-    // Shared filter application so the data query and the count query can
-    // never drift apart (previously the count query ignored every filter,
-    // so pagination.total didn't match the filtered results).
+    // Shared filter application, reused for the single query below. This
+    // used to back two separate round trips (a data query and a second,
+    // identically-filtered count-only query) - now count comes from the
+    // same query via { count: "exact" }, halving the round trips with no
+    // change to which rows are counted.
     const applyFilters = (q: any) => {
-      q = q.eq("organization_id", userData.organization_id);
+      q = q.eq("organization_id", context.organizationId);
 
       if (search) {
         q = q.or(
@@ -75,17 +64,14 @@ export async function GET(request: NextRequest) {
       (supabase.from("clients") as any).select(
         `*,
         branch:branches(id, name),
-        assignments:employee_client_assignments(is_primary, employee:employees(first_name, last_name))`
+        assignments:employee_client_assignments(is_primary, employee:employees(first_name, last_name))`,
+        { count: "exact" }
       )
     ).order(sortBy, { ascending: sortOrder === "asc" });
 
-    const { data: clients, error } = await query.range(offset, offset + limit - 1);
+    const { data: clients, error, count } = await query.range(offset, offset + limit - 1);
 
     if (error) throw error;
-
-    const { count } = await applyFilters(
-      (supabase.from("clients") as any).select("*", { count: "exact", head: true })
-    );
 
     return NextResponse.json({
       clients: clients || [],
@@ -104,8 +90,20 @@ export async function GET(request: NextRequest) {
 
 export async function POST(request: NextRequest) {
   try {
-    const supabase = await createServerClient();
-    const body = await request.json();
+    const auth = await requireAuth();
+    if (!auth.ok) return auth.response;
+    const { context } = auth;
+    const supabase = context.supabase;
+
+    const permError = await requirePermission(context, "client.create");
+    if (permError) return permError;
+
+    let body: unknown;
+    try {
+      body = await request.json();
+    } catch {
+      return NextResponse.json({ error: "Malformed request body" }, { status: 400 });
+    }
     const parsed = createClientSchema.safeParse(body);
 
     if (!parsed.success) {
@@ -121,24 +119,12 @@ export async function POST(request: NextRequest) {
 
     const data = parsed.data;
 
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-    const { data: userData } = await (supabase.from("users") as any)
-      .select("organization_id")
-      .eq("id", user?.id)
-      .single();
-
-    if (!userData) {
-      return NextResponse.json({ error: "User not found" }, { status: 404 });
-    }
-
     // Check for duplicate email if provided
     if (data.email) {
       const { data: existing } = await (supabase.from("clients") as any)
         .select("id")
         .eq("email", data.email)
-        .eq("organization_id", userData.organization_id)
+        .eq("organization_id", context.organizationId)
         .eq("is_deleted", false);
 
       if (existing && existing.length > 0) {
@@ -152,7 +138,7 @@ export async function POST(request: NextRequest) {
     // Create client
     const { data: client, error: clientError } = await (supabase.from("clients") as any)
       .insert({
-        organization_id: userData.organization_id,
+        organization_id: context.organizationId,
         branch_id: data.branch_id,
         first_name: data.first_name,
         last_name: data.last_name,
@@ -195,13 +181,10 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    // Log to audit logs
-    await (supabase.from("audit_logs") as any).insert({
-      organization_id: userData.organization_id,
-      user_id: user?.id,
-      event_type: "CREATE",
-      resource_type: "clients",
-      resource_id: client.id,
+    await writeAuditLog(context, {
+      eventType: "CREATE",
+      resourceType: "clients",
+      resourceId: client.id,
       action: "created",
       changes: { new_values: client },
     });

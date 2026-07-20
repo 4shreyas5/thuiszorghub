@@ -991,7 +991,7 @@ export default function ClientDetailPage() {
                       </div>
                       <StatusBadge
                         status={invoice.status}
-                        label={invoice.status.replace(/_/g, " ")}
+                        label={invoice.status?.replace(/_/g, " ")}
                         size="sm"
                       />
                     </li>

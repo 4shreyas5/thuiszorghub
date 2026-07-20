@@ -100,7 +100,7 @@ interface CarePlanReport {
   };
 }
 
-export function useOperationalReport(filters?: ReportFilters) {
+export function useOperationalReport(filters?: ReportFilters, enabled = true) {
   const [data, setData] = useState<OperationalReport | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -132,16 +132,17 @@ export function useOperationalReport(filters?: ReportFilters) {
   }, [filters]);
 
   useEffect(() => {
+    if (!enabled) return;
     // Deferred to a microtask so the fetch trigger isn't a synchronous setState call in the effect body.
     queueMicrotask(() => {
       fetch();
     });
-  }, [fetch]);
+  }, [fetch, enabled]);
 
   return { data, loading, error, refetch: fetch };
 }
 
-export function useFinancialReport(filters?: ReportFilters) {
+export function useFinancialReport(filters?: ReportFilters, enabled = true) {
   const [data, setData] = useState<FinancialReport | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -170,16 +171,17 @@ export function useFinancialReport(filters?: ReportFilters) {
   }, [filters]);
 
   useEffect(() => {
+    if (!enabled) return;
     // Deferred to a microtask so the fetch trigger isn't a synchronous setState call in the effect body.
     queueMicrotask(() => {
       fetch();
     });
-  }, [fetch]);
+  }, [fetch, enabled]);
 
   return { data, loading, error, refetch: fetch };
 }
 
-export function useEmployeeReport(filters?: ReportFilters) {
+export function useEmployeeReport(filters?: ReportFilters, enabled = true) {
   const [data, setData] = useState<EmployeeReport | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -208,16 +210,17 @@ export function useEmployeeReport(filters?: ReportFilters) {
   }, [filters]);
 
   useEffect(() => {
+    if (!enabled) return;
     // Deferred to a microtask so the fetch trigger isn't a synchronous setState call in the effect body.
     queueMicrotask(() => {
       fetch();
     });
-  }, [fetch]);
+  }, [fetch, enabled]);
 
   return { data, loading, error, refetch: fetch };
 }
 
-export function useClientReport(filters?: ReportFilters) {
+export function useClientReport(filters?: ReportFilters, enabled = true) {
   const [data, setData] = useState<ClientReport | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -247,16 +250,17 @@ export function useClientReport(filters?: ReportFilters) {
   }, [filters]);
 
   useEffect(() => {
+    if (!enabled) return;
     // Deferred to a microtask so the fetch trigger isn't a synchronous setState call in the effect body.
     queueMicrotask(() => {
       fetch();
     });
-  }, [fetch]);
+  }, [fetch, enabled]);
 
   return { data, loading, error, refetch: fetch };
 }
 
-export function useBranchReport(filters?: ReportFilters) {
+export function useBranchReport(filters?: ReportFilters, enabled = true) {
   const [data, setData] = useState<BranchReport | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -284,16 +288,17 @@ export function useBranchReport(filters?: ReportFilters) {
   }, [filters]);
 
   useEffect(() => {
+    if (!enabled) return;
     // Deferred to a microtask so the fetch trigger isn't a synchronous setState call in the effect body.
     queueMicrotask(() => {
       fetch();
     });
-  }, [fetch]);
+  }, [fetch, enabled]);
 
   return { data, loading, error, refetch: fetch };
 }
 
-export function useCarePlanReport(filters?: ReportFilters) {
+export function useCarePlanReport(filters?: ReportFilters, enabled = true) {
   const [data, setData] = useState<CarePlanReport | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -322,11 +327,12 @@ export function useCarePlanReport(filters?: ReportFilters) {
   }, [filters]);
 
   useEffect(() => {
+    if (!enabled) return;
     // Deferred to a microtask so the fetch trigger isn't a synchronous setState call in the effect body.
     queueMicrotask(() => {
       fetch();
     });
-  }, [fetch]);
+  }, [fetch, enabled]);
 
   return { data, loading, error, refetch: fetch };
 }

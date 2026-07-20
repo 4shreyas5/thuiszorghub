@@ -1,29 +1,17 @@
-import { createServerClient } from "@/core/database/server";
 import { NextRequest, NextResponse } from "next/server";
 import { CreatePaymentSchema, PaymentFilterSchema } from "@/core/validation/billing-schemas";
 import { ZodError } from "zod";
+import { requireAuth, requirePermission, writeAuditLog } from "@/core/permissions/server";
 
 export async function GET(request: NextRequest) {
   try {
-    const supabase = await createServerClient();
+    const auth = await requireAuth();
+    if (!auth.ok) return auth.response;
+    const { context } = auth;
+    const supabase = context.supabase;
 
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-
-    if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
-    const { data: userData } = await supabase
-      .from("users")
-      .select("organization_id")
-      .eq("id", user.id)
-      .single();
-
-    if (!userData) {
-      return NextResponse.json({ error: "User not found" }, { status: 404 });
-    }
+    const permError = await requirePermission(context, "billing.view");
+    if (permError) return permError;
 
     const searchParams = request.nextUrl.searchParams;
     const filterData = {
@@ -45,7 +33,7 @@ export async function GET(request: NextRequest) {
       .select("*,invoice:invoices(invoice_number,client:clients(first_name,last_name))", {
         count: "exact",
       })
-      .eq("organization_id", userData.organization_id)
+      .eq("organization_id", context.organizationId)
       .eq("is_deleted", false)
       .order("payment_date", { ascending: false })
       .range(validatedFilters.offset, validatedFilters.offset + validatedFilters.limit - 1);
@@ -99,25 +87,13 @@ export async function GET(request: NextRequest) {
 
 export async function POST(request: NextRequest) {
   try {
-    const supabase = await createServerClient();
+    const auth = await requireAuth();
+    if (!auth.ok) return auth.response;
+    const { context } = auth;
+    const supabase = context.supabase;
 
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-
-    if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
-    const { data: userData } = await supabase
-      .from("users")
-      .select("organization_id")
-      .eq("id", user.id)
-      .single();
-
-    if (!userData) {
-      return NextResponse.json({ error: "User not found" }, { status: 404 });
-    }
+    const permError = await requirePermission(context, "billing.manage");
+    if (permError) return permError;
 
     const body = await request.json();
     const validatedData = CreatePaymentSchema.parse(body);
@@ -127,7 +103,7 @@ export async function POST(request: NextRequest) {
       .from("invoices")
       .select("*")
       .eq("id", validatedData.invoiceId)
-      .eq("organization_id", userData.organization_id)
+      .eq("organization_id", context.organizationId)
       .eq("is_deleted", false)
       .single();
 
@@ -139,7 +115,7 @@ export async function POST(request: NextRequest) {
     const { data: payment, error: paymentError } = await supabase
       .from("payments")
       .insert({
-        organization_id: userData.organization_id,
+        organization_id: context.organizationId,
         invoice_id: validatedData.invoiceId,
         payment_date: validatedData.paymentDate,
         amount: validatedData.amount,
@@ -149,8 +125,8 @@ export async function POST(request: NextRequest) {
         transaction_id: validatedData.transactionId,
         status: "completed",
         notes: validatedData.notes,
-        created_by: user.id,
-        updated_by: user.id,
+        created_by: context.userId,
+        updated_by: context.userId,
       })
       .select()
       .single();
@@ -173,17 +149,15 @@ export async function POST(request: NextRequest) {
         remaining_balance: newRemainingBalance,
         status: newStatus,
         paid_at: newRemainingBalance === 0 ? new Date() : invoice.paid_at,
-        updated_by: user.id,
+        updated_by: context.userId,
       })
-      .eq("id", validatedData.invoiceId);
+      .eq("id", validatedData.invoiceId)
+      .eq("organization_id", context.organizationId);
 
-    // Audit log
-    await supabase.from("audit_logs").insert({
-      organization_id: userData.organization_id,
-      user_id: user.id,
-      event_type: "CREATE",
-      resource_type: "payments",
-      resource_id: payment.id,
+    await writeAuditLog(context, {
+      eventType: "CREATE",
+      resourceType: "payments",
+      resourceId: payment.id,
       action: "created",
       changes: { new_values: payment },
     });

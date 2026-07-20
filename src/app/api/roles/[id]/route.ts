@@ -1,40 +1,23 @@
-import { createServerClient } from "@/core/database/server";
 import { NextRequest, NextResponse } from "next/server";
-
-async function requireOrgContext(supabase: Awaited<ReturnType<typeof createServerClient>>) {
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user)
-    return { error: NextResponse.json({ error: "Unauthorized" }, { status: 401 }) } as const;
-
-  const { data: userData, error } = await supabase
-    .from("users")
-    .select("organization_id")
-    .eq("id", user.id)
-    .single();
-
-  if (error || !userData) {
-    return { error: NextResponse.json({ error: "User not found" }, { status: 404 }) } as const;
-  }
-
-  return { user, organizationId: userData.organization_id } as const;
-}
+import { requireAuth, requirePermission } from "@/core/permissions/server";
 
 export async function GET(_request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
-    const supabase = await createServerClient();
+    const auth = await requireAuth();
+    if (!auth.ok) return auth.response;
+    const { context } = auth;
     const { id } = await params;
-    const ctx = await requireOrgContext(supabase);
-    if ("error" in ctx) return ctx.error;
 
-    const { data: role, error } = await supabase
+    const permError = await requirePermission(context, "role.view");
+    if (permError) return permError;
+
+    const { data: role, error } = await context.supabase
       .from("roles")
       .select(
         "id, name, description, is_system, created_at, role_permissions(id, permissions(id, module, action, code, description))"
       )
       .eq("id", id)
-      .eq("organization_id", ctx.organizationId)
+      .eq("organization_id", context.organizationId)
       .single();
 
     if (error || !role) {
@@ -50,15 +33,18 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
 
 export async function PUT(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
-    const supabase = await createServerClient();
+    const auth = await requireAuth();
+    if (!auth.ok) return auth.response;
+    const { context } = auth;
     const { id } = await params;
-    const ctx = await requireOrgContext(supabase);
-    if ("error" in ctx) return ctx.error;
+
+    const permCheck = await requirePermission(context, "role.update");
+    if (permCheck) return permCheck;
 
     const body = await request.json();
     const { name, description, permissionIds } = body;
 
-    const { data: role, error } = await supabase
+    const { data: role, error } = await context.supabase
       .from("roles")
       .update({
         name: name || undefined,
@@ -66,7 +52,7 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
         updated_at: new Date().toISOString(),
       })
       .eq("id", id)
-      .eq("organization_id", ctx.organizationId)
+      .eq("organization_id", context.organizationId)
       .select()
       .single();
 
@@ -83,16 +69,14 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
     }
 
     if (Array.isArray(permissionIds)) {
-      await supabase.from("role_permissions").delete().eq("role_id", id);
+      await context.supabase.from("role_permissions").delete().eq("role_id", id);
       if (permissionIds.length > 0) {
-        const { error: permError } = await supabase
-          .from("role_permissions")
-          .insert(
-            permissionIds.map((permissionId: string) => ({
-              role_id: id,
-              permission_id: permissionId,
-            }))
-          );
+        const { error: permError } = await context.supabase.from("role_permissions").insert(
+          permissionIds.map((permissionId: string) => ({
+            role_id: id,
+            permission_id: permissionId,
+          }))
+        );
         if (permError) console.error("[roles PUT] Error updating permissions:", permError);
       }
     }
@@ -109,16 +93,19 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const supabase = await createServerClient();
+    const auth = await requireAuth();
+    if (!auth.ok) return auth.response;
+    const { context } = auth;
     const { id } = await params;
-    const ctx = await requireOrgContext(supabase);
-    if ("error" in ctx) return ctx.error;
 
-    const { data: role, error } = await supabase
+    const permCheck = await requirePermission(context, "role.delete");
+    if (permCheck) return permCheck;
+
+    const { data: role, error } = await context.supabase
       .from("roles")
       .delete()
       .eq("id", id)
-      .eq("organization_id", ctx.organizationId)
+      .eq("organization_id", context.organizationId)
       .select()
       .single();
 

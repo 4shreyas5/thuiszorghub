@@ -1,32 +1,18 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { createServerClient } from "@/core/database/server";
 import { NextRequest, NextResponse } from "next/server";
+import { ZodError } from "zod";
 import { createVisitSchema } from "@/core/validation/visit";
 import { checkVisitConflicts } from "@/core/scheduling/conflicts";
+import { requireAuth, requirePermission, writeAuditLog } from "@/core/permissions/server";
 
+// No permission gate beyond org membership - visit listings feed the
+// scheduling calendar and multiple dashboards used by most roles.
 export async function GET(request: NextRequest) {
   try {
-    const supabase = await createServerClient();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-
-    if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
-    const { data: userData } = await supabase
-      .from("users")
-      .select("organization_id")
-      .eq("id", user.id)
-      .single();
-
-    if (!userData || !userData.organization_id) {
-      return NextResponse.json(
-        { error: "User not found or not assigned to organization" },
-        { status: 404 }
-      );
-    }
+    const auth = await requireAuth();
+    if (!auth.ok) return auth.response;
+    const { context } = auth;
+    const supabase = context.supabase;
 
     const searchParams = request.nextUrl.searchParams;
 
@@ -40,19 +26,27 @@ export async function GET(request: NextRequest) {
     const dateTo = searchParams.get("dateTo") || "";
     const sortBy = searchParams.get("sortBy") || "scheduled_date";
     const sortOrder = searchParams.get("sortOrder") || "asc";
+    // Opt-in narrow projection for callers that only need to count/bucket
+    // visits (e.g. the dashboard chart) rather than render them - avoids
+    // pulling the client/employee/branch/care_plan joins and every column
+    // on scheduled_visits when only a couple of fields are read. Every
+    // other caller is unaffected (still gets the full joined shape).
+    const fields = searchParams.get("fields") || "";
 
     const offset = (page - 1) * limit;
 
     let query = (supabase.from("scheduled_visits") as any)
       .select(
-        `*,
+        fields === "minimal"
+          ? "scheduled_date, status"
+          : `*,
         client:clients(id, first_name, last_name, is_active),
         employee:employees(id, first_name, last_name, is_active),
         branch:branches(id, name),
         care_plan:care_plans(id, title)`,
         { count: "exact" }
       )
-      .eq("organization_id", userData.organization_id)
+      .eq("organization_id", context.organizationId)
       .eq("is_deleted", false);
 
     if (search) {
@@ -106,27 +100,16 @@ export async function GET(request: NextRequest) {
 
 export async function POST(request: NextRequest) {
   try {
-    const supabase = await createServerClient();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
+    const auth = await requireAuth();
+    if (!auth.ok) return auth.response;
+    const { context } = auth;
+    const supabase = context.supabase;
 
-    if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
+    const permError = await requirePermission(context, "visit.create");
+    if (permError) return permError;
 
     const body = await request.json();
     const validatedData = createVisitSchema.parse(body);
-
-    // Get organization from user
-    const { data: userData } = await (supabase.from("users") as any)
-      .select("organization_id")
-      .eq("id", user.id)
-      .single();
-
-    if (!userData) {
-      return NextResponse.json({ error: "User not found" }, { status: 404 });
-    }
 
     // Validate client is active
     const { data: client } = await (supabase.from("clients") as any)
@@ -139,7 +122,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Client not found or inactive" }, { status: 400 });
     }
 
-    if (client.organization_id !== userData.organization_id) {
+    if (client.organization_id !== context.organizationId) {
       return NextResponse.json({ error: "Cross-organization visit not allowed" }, { status: 403 });
     }
 
@@ -155,7 +138,7 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ error: "Employee not found or inactive" }, { status: 400 });
       }
 
-      if (employee.organization_id !== userData.organization_id) {
+      if (employee.organization_id !== context.organizationId) {
         return NextResponse.json(
           { error: "Cross-organization visit not allowed" },
           { status: 403 }
@@ -193,7 +176,7 @@ export async function POST(request: NextRequest) {
     // Create visit
     const { data: visit, error } = await (supabase.from("scheduled_visits") as any)
       .insert({
-        organization_id: userData.organization_id,
+        organization_id: context.organizationId,
         client_id: validatedData.client_id,
         employee_id: validatedData.employee_id || null,
         branch_id: validatedData.branch_id,
@@ -215,13 +198,10 @@ export async function POST(request: NextRequest) {
 
     if (error) throw error;
 
-    // Log to audit logs
-    await (supabase.from("audit_logs") as any).insert({
-      organization_id: userData.organization_id,
-      user_id: user.id,
-      event_type: "CREATE",
-      resource_type: "scheduled_visits",
-      resource_id: visit.id,
+    await writeAuditLog(context, {
+      eventType: "CREATE",
+      resourceType: "scheduled_visits",
+      resourceId: visit.id,
       action: "created",
       changes: { new_values: validatedData },
     });
@@ -229,8 +209,14 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(visit, { status: 201 });
   } catch (error) {
     console.error("Error creating visit:", error);
-    if (error instanceof Error && error.message.includes("validation")) {
-      return NextResponse.json({ error: error.message }, { status: 400 });
+    if (error instanceof ZodError) {
+      return NextResponse.json(
+        { error: "Invalid request data", details: error.errors },
+        { status: 400 }
+      );
+    }
+    if (error instanceof SyntaxError) {
+      return NextResponse.json({ error: "Malformed request body" }, { status: 400 });
     }
     return NextResponse.json({ error: "Failed to create visit" }, { status: 500 });
   }

@@ -1,24 +1,28 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { createServerClient } from "@/core/database/server";
 import { NextRequest, NextResponse } from "next/server";
 import { updateCarePlanSchema } from "@/core/validation/care-plan";
 import { z } from "zod";
+import { requireAuth, requirePermission, writeAuditLog } from "@/core/permissions/server";
 
 export const dynamic = "force-dynamic";
 
+// No permission gate beyond org membership - see care-plans/route.ts.
 export async function GET(_request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const auth = await requireAuth();
+    if (!auth.ok) return auth.response;
+    const { context } = auth;
     const { id } = await params;
-    const supabase = await createServerClient();
 
     // No is_deleted filter here on purpose: archived care plans must stay
     // viewable on their own detail page - only the list view defaults to
     // hiding archived plans.
-    const { data: rows, error } = await (supabase.from("care_plans") as any)
+    const { data: rows, error } = await (context.supabase.from("care_plans") as any)
       .select(
         "*, client:client_id(id, first_name, last_name), primary_caregiver:primary_caregiver_id(id, first_name, last_name)"
       )
-      .eq("id", id);
+      .eq("id", id)
+      .eq("organization_id", context.organizationId);
 
     if (error) throw error;
 
@@ -36,29 +40,19 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
 
 export async function PUT(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const auth = await requireAuth();
+    if (!auth.ok) return auth.response;
+    const { context } = auth;
     const { id } = await params;
-    const supabase = await createServerClient();
+
+    const permError = await requirePermission(context, "care_plan.update");
+    if (permError) return permError;
+
     const body = await request.json();
 
     const validated = updateCarePlanSchema.parse(body);
 
-    const { data: userData } = await (supabase.auth.getUser() as any);
-    const userId = userData?.user?.id;
-
-    if (!userId) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
-    const { data: user } = await (supabase.from("users") as any)
-      .select("organization_id")
-      .eq("id", userId)
-      .single();
-
-    if (!user) {
-      return NextResponse.json({ error: "User not found" }, { status: 401 });
-    }
-
-    const { data: existing } = await (supabase.from("care_plans") as any)
+    const { data: existing } = await (context.supabase.from("care_plans") as any)
       .select("organization_id")
       .eq("id", id)
       .single();
@@ -67,7 +61,7 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
       return NextResponse.json({ error: "Care plan not found" }, { status: 404 });
     }
 
-    if (existing.organization_id !== user.organization_id) {
+    if (existing.organization_id !== context.organizationId) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
     }
 
@@ -88,31 +82,29 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
       updateData.deleted_at = null;
     }
 
-    const { data, error } = await (supabase.from("care_plans") as any)
+    const { data, error } = await (context.supabase.from("care_plans") as any)
       .update(updateData)
       .eq("id", id)
+      .eq("organization_id", context.organizationId)
       .select()
       .single();
 
     if (error) throw error;
 
-    await (supabase.from("care_plan_history") as any).insert([
+    await (context.supabase.from("care_plan_history") as any).insert([
       {
         care_plan_id: id,
         action: "UPDATE",
-        action_by_id: userId,
+        action_by_id: context.userId,
         previous_values: { ...body },
         new_values: updateData,
       },
     ]);
 
-    // Log to audit logs (real columns: event_type/resource_type/resource_id)
-    await (supabase.from("audit_logs") as any).insert({
-      organization_id: user.organization_id,
-      user_id: userId,
-      event_type: "UPDATE",
-      resource_type: "care_plans",
-      resource_id: id,
+    await writeAuditLog(context, {
+      eventType: "UPDATE",
+      resourceType: "care_plans",
+      resourceId: id,
       action: "updated",
       changes: { updates: updateData },
     });
@@ -132,26 +124,15 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const auth = await requireAuth();
+    if (!auth.ok) return auth.response;
+    const { context } = auth;
     const { id } = await params;
-    const supabase = await createServerClient();
 
-    const { data: userData } = await (supabase.auth.getUser() as any);
-    const userId = userData?.user?.id;
+    const permError = await requirePermission(context, "care_plan.delete");
+    if (permError) return permError;
 
-    if (!userId) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
-    const { data: user } = await (supabase.from("users") as any)
-      .select("organization_id")
-      .eq("id", userId)
-      .single();
-
-    if (!user) {
-      return NextResponse.json({ error: "User not found" }, { status: 401 });
-    }
-
-    const { data: existing } = await (supabase.from("care_plans") as any)
+    const { data: existing } = await (context.supabase.from("care_plans") as any)
       .select("organization_id")
       .eq("id", id)
       .eq("is_deleted", false)
@@ -161,30 +142,28 @@ export async function DELETE(
       return NextResponse.json({ error: "Care plan not found" }, { status: 404 });
     }
 
-    if (existing.organization_id !== user.organization_id) {
+    if (existing.organization_id !== context.organizationId) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
     }
 
     const now = new Date().toISOString();
-    await (supabase.from("care_plans") as any)
+    await (context.supabase.from("care_plans") as any)
       .update({ is_deleted: true, deleted_at: now, status: "archived" })
-      .eq("id", id);
+      .eq("id", id)
+      .eq("organization_id", context.organizationId);
 
-    await (supabase.from("care_plan_history") as any).insert([
+    await (context.supabase.from("care_plan_history") as any).insert([
       {
         care_plan_id: id,
         action: "DELETE",
-        action_by_id: userId,
+        action_by_id: context.userId,
       },
     ]);
 
-    // Log to audit logs (real columns: event_type/resource_type/resource_id)
-    await (supabase.from("audit_logs") as any).insert({
-      organization_id: user.organization_id,
-      user_id: userId,
-      event_type: "DELETE",
-      resource_type: "care_plans",
-      resource_id: id,
+    await writeAuditLog(context, {
+      eventType: "DELETE",
+      resourceType: "care_plans",
+      resourceId: id,
       action: "archived",
     });
 

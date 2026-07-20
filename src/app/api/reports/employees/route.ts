@@ -1,5 +1,5 @@
-import { createServerClient } from "@/core/database/server";
 import { NextRequest, NextResponse } from "next/server";
+import { requireAuth, requirePermission } from "@/core/permissions/server";
 
 interface EmployeeFilters {
   startDate?: string | undefined;
@@ -33,26 +33,15 @@ interface EmployeeMetricValue extends Record<string, unknown> {
 
 export async function GET(request: NextRequest) {
   try {
-    const supabase = await createServerClient();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
+    const auth = await requireAuth();
+    if (!auth.ok) return auth.response;
+    const { context } = auth;
+    const supabase = context.supabase;
 
-    if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
+    const permError = await requirePermission(context, "report.view");
+    if (permError) return permError;
 
-    const { data: userData } = await supabase
-      .from("users")
-      .select("organization_id")
-      .eq("id", user.id)
-      .single();
-
-    if (!userData) {
-      return NextResponse.json({ error: "User not found" }, { status: 404 });
-    }
-
-    const organizationId = userData.organization_id;
+    const organizationId = context.organizationId;
 
     // Parse filters
     const searchParams = request.nextUrl.searchParams;
@@ -79,8 +68,6 @@ export async function GET(request: NextRequest) {
     if (filters.branchId) employeeQuery = employeeQuery.eq("branch_id", filters.branchId);
     if (filters.employeeId) employeeQuery = employeeQuery.eq("id", filters.employeeId);
 
-    const { data: employees } = await employeeQuery;
-
     // Get timesheets
     let timesheetQuery = supabase
       .from("timesheets")
@@ -94,17 +81,21 @@ export async function GET(request: NextRequest) {
 
     if (filters.employeeId) timesheetQuery = timesheetQuery.eq("employee_id", filters.employeeId);
 
-    const { data: timesheets } = await timesheetQuery;
-
-    // Get visit executions - no employee_id/executed_date column on this
-    // table itself (see the operational report's fix above for why); join
-    // scheduled_visits for employee_id and filter client-side.
-    const { data: rawVisits } = await supabase
-      .from("visit_executions")
-      .select("id, status, actual_duration_minutes, completed_at, scheduled_visits(employee_id)")
-      .eq("organization_id", organizationId)
-      .gte("completed_at", `${startDate}T00:00:00Z`)
-      .lte("completed_at", `${endDate}T23:59:59Z`);
+    // employees, timesheets and visit executions don't depend on each
+    // other's results - run them concurrently.
+    const [{ data: employees }, { data: timesheets }, { data: rawVisits }] = await Promise.all([
+      employeeQuery,
+      timesheetQuery,
+      // Get visit executions - no employee_id/executed_date column on this
+      // table itself (see the operational report's fix above for why); join
+      // scheduled_visits for employee_id and filter client-side.
+      supabase
+        .from("visit_executions")
+        .select("id, status, actual_duration_minutes, completed_at, scheduled_visits(employee_id)")
+        .eq("organization_id", organizationId)
+        .gte("completed_at", `${startDate}T00:00:00Z`)
+        .lte("completed_at", `${endDate}T23:59:59Z`),
+    ]);
 
     const visits = (rawVisits || [])
       .map((v) => ({
@@ -174,7 +165,7 @@ export async function GET(request: NextRequest) {
     // Log the report
     await supabase.from("report_audit_logs").insert({
       organization_id: organizationId,
-      user_id: user.id,
+      user_id: context.userId,
       report_type: "employees",
       action: "generated",
       filters,

@@ -105,7 +105,7 @@ export function VisitForm({ visit, isLoading = false, onSubmit }: VisitFormProps
 
         if (branchesRes.ok) {
           const data = await branchesRes.json();
-          setBranches(data.branches || data);
+          setBranches(data.data || []);
         }
       } catch (err) {
         console.error("Error fetching form data:", err);
